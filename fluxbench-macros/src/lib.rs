@@ -15,6 +15,90 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, ItemFn, ItemStruct};
 
+// ============================================================================
+// Attribute Parsing Helpers
+// ============================================================================
+//
+// Common utilities for parsing macro attributes, eliminating duplication
+// across the 6 procedural macros.
+
+mod attr {
+    use syn::meta::ParseNestedMeta;
+
+    /// Get the attribute name as a string
+    pub fn name(meta: &ParseNestedMeta) -> String {
+        meta.path
+            .get_ident()
+            .map(|i| i.to_string())
+            .unwrap_or_default()
+    }
+
+    /// Parse a string literal attribute: `attr = "value"`
+    pub fn string(meta: &ParseNestedMeta) -> syn::Result<String> {
+        let value: syn::LitStr = meta.value()?.parse()?;
+        Ok(value.value())
+    }
+
+    /// Parse a float literal attribute: `attr = 1.5`
+    pub fn float(meta: &ParseNestedMeta) -> syn::Result<f64> {
+        let value: syn::LitFloat = meta.value()?.parse()?;
+        value.base10_parse()
+    }
+
+    /// Parse an integer literal attribute: `attr = 42`
+    pub fn int<T>(meta: &ParseNestedMeta) -> syn::Result<Option<T>>
+    where
+        T: std::str::FromStr,
+        T::Err: std::fmt::Display,
+    {
+        let value: syn::LitInt = meta.value()?.parse()?;
+        Ok(value.base10_parse().ok())
+    }
+
+    /// Parse a boolean literal attribute: `attr = true`
+    pub fn bool(meta: &ParseNestedMeta) -> syn::Result<bool> {
+        let value: syn::LitBool = meta.value()?.parse()?;
+        Ok(value.value())
+    }
+
+    /// Parse a comma-separated string as tags: `tags = "a, b, c"`
+    pub fn tags(meta: &ParseNestedMeta) -> syn::Result<Vec<String>> {
+        let value: syn::LitStr = meta.value()?.parse()?;
+        Ok(value
+            .value()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect())
+    }
+
+    /// Parse a bracketed array of strings: `items = ["a", "b", "c"]`
+    pub fn string_array(meta: &ParseNestedMeta) -> syn::Result<Vec<String>> {
+        meta.value()?;
+        let content;
+        syn::bracketed!(content in meta.input);
+        let items: syn::punctuated::Punctuated<syn::LitStr, syn::Token![,]> =
+            syn::punctuated::Punctuated::parse_terminated(&content)?;
+        Ok(items.iter().map(|s| s.value()).collect())
+    }
+
+    /// Create an unknown attribute error
+    pub fn unknown(meta: &ParseNestedMeta, name: &str) -> syn::Error {
+        meta.error(format!("unknown attribute: {}", name))
+    }
+
+    /// Skip/ignore an attribute (parse but discard)
+    pub fn skip_string(meta: &ParseNestedMeta) -> syn::Result<()> {
+        let _: syn::LitStr = meta.value()?.parse()?;
+        Ok(())
+    }
+
+    /// Skip/ignore an integer attribute
+    pub fn skip_int(meta: &ParseNestedMeta) -> syn::Result<()> {
+        let _: syn::LitInt = meta.value()?.parse()?;
+        Ok(())
+    }
+}
+
 /// Register a benchmark function
 ///
 /// # Example
@@ -213,64 +297,20 @@ fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
     }
 
     let parser = syn::meta::parser(|meta| {
-        let path_str = meta
-            .path
-            .get_ident()
-            .map(|i| i.to_string())
-            .unwrap_or_default();
-
-        match path_str.as_str() {
-            "id" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                config.id = Some(value.value());
-            }
-            "group" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                config.group = Some(value.value());
-            }
-            "severity" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                config.severity = Some(value.value());
-            }
-            "threshold" => {
-                let value: syn::LitFloat = meta.value()?.parse()?;
-                config.threshold = value.base10_parse().ok();
-            }
-            "budget" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                config.budget_ns = parse_duration(&value.value());
-            }
-            "runtime" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                runtime_type = Some(value.value());
-            }
-            "worker_threads" => {
-                let value: syn::LitInt = meta.value()?.parse()?;
-                worker_threads = value.base10_parse().ok();
-            }
-            "enable_time" => {
-                let value: syn::LitBool = meta.value()?.parse()?;
-                enable_time = value.value();
-            }
-            "enable_io" => {
-                let value: syn::LitBool = meta.value()?.parse()?;
-                enable_io = value.value();
-            }
-            "tags" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                config.tags = value
-                    .value()
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .collect();
-            }
-            "iterations" => {
-                // Just parse and ignore for now - handled at runtime
-                let _value: syn::LitInt = meta.value()?.parse()?;
-            }
-            _ => {
-                return Err(meta.error(format!("unknown attribute: {}", path_str)));
-            }
+        let name = attr::name(&meta);
+        match name.as_str() {
+            "id" => config.id = Some(attr::string(&meta)?),
+            "group" => config.group = Some(attr::string(&meta)?),
+            "severity" => config.severity = Some(attr::string(&meta)?),
+            "threshold" => config.threshold = Some(attr::float(&meta)?),
+            "budget" => config.budget_ns = parse_duration(&attr::string(&meta)?),
+            "runtime" => runtime_type = Some(attr::string(&meta)?),
+            "worker_threads" => worker_threads = attr::int(&meta)?,
+            "enable_time" => enable_time = attr::bool(&meta)?,
+            "enable_io" => enable_io = attr::bool(&meta)?,
+            "tags" => config.tags = attr::tags(&meta)?,
+            "iterations" => attr::skip_int(&meta)?,
+            _ => return Err(attr::unknown(&meta, &name)),
         }
         Ok(())
     });
@@ -337,40 +377,23 @@ fn verify_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, sy
     let struct_name_str = struct_name.to_string();
 
     let mut expr = String::new();
-    let mut severity = quote! { ::fluxbench::Severity::Critical };
+    let mut severity = quote! { ::fluxbench::VerifySeverity::Critical };
     let mut margin = 0.0f64;
 
     let parser = syn::meta::parser(|meta| {
-        let path_str = meta
-            .path
-            .get_ident()
-            .map(|i| i.to_string())
-            .unwrap_or_default();
-
-        match path_str.as_str() {
-            "expr" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                expr = value.value();
-            }
+        let name = attr::name(&meta);
+        match name.as_str() {
+            "expr" => expr = attr::string(&meta)?,
             "severity" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                severity = match value.value().as_str() {
-                    "critical" => quote! { ::fluxbench::Severity::Critical },
-                    "warning" => quote! { ::fluxbench::Severity::Warning },
-                    _ => quote! { ::fluxbench::Severity::Info },
+                severity = match attr::string(&meta)?.as_str() {
+                    "critical" => quote! { ::fluxbench::VerifySeverity::Critical },
+                    "warning" => quote! { ::fluxbench::VerifySeverity::Warning },
+                    _ => quote! { ::fluxbench::VerifySeverity::Info },
                 };
             }
-            "margin" => {
-                let value: syn::LitFloat = meta.value()?.parse()?;
-                margin = value.base10_parse().unwrap_or(0.0);
-            }
-            "bench" => {
-                // Ignore for now - captured in expr
-                let _value: syn::LitStr = meta.value()?.parse()?;
-            }
-            _ => {
-                return Err(meta.error(format!("unknown attribute: {}", path_str)));
-            }
+            "margin" => margin = attr::float(&meta)?,
+            "bench" => attr::skip_string(&meta)?,
+            _ => return Err(attr::unknown(&meta, &name)),
         }
         Ok(())
     });
@@ -411,32 +434,13 @@ fn synthetic_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2,
     let mut unit: Option<String> = None;
 
     let parser = syn::meta::parser(|meta| {
-        let path_str = meta
-            .path
-            .get_ident()
-            .map(|i| i.to_string())
-            .unwrap_or_default();
-
-        match path_str.as_str() {
-            "id" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                id = value.value();
-            }
-            "formula" | "expr" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                formula = value.value();
-            }
-            "unit" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                unit = Some(value.value());
-            }
-            "deps" => {
-                // Ignore for now - parsed from formula
-                let _value: syn::LitStr = meta.value()?.parse()?;
-            }
-            _ => {
-                return Err(meta.error(format!("unknown attribute: {}", path_str)));
-            }
+        let name = attr::name(&meta);
+        match name.as_str() {
+            "id" => id = attr::string(&meta)?,
+            "formula" | "expr" => formula = attr::string(&meta)?,
+            "unit" => unit = Some(attr::string(&meta)?),
+            "deps" => attr::skip_string(&meta)?,
+            _ => return Err(attr::unknown(&meta, &name)),
         }
         Ok(())
     });
@@ -501,36 +505,13 @@ fn group_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, syn
     let mut parent: Option<String> = None;
 
     let parser = syn::meta::parser(|meta| {
-        let path_str = meta
-            .path
-            .get_ident()
-            .map(|i| i.to_string())
-            .unwrap_or_default();
-
-        match path_str.as_str() {
-            "id" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                id = value.value();
-            }
-            "description" | "desc" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                description = value.value();
-            }
-            "tags" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                tags = value
-                    .value()
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .collect();
-            }
-            "parent" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                parent = Some(value.value());
-            }
-            _ => {
-                return Err(meta.error(format!("unknown attribute: {}", path_str)));
-            }
+        let name = attr::name(&meta);
+        match name.as_str() {
+            "id" => id = attr::string(&meta)?,
+            "description" | "desc" => description = attr::string(&meta)?,
+            "tags" => tags = attr::tags(&meta)?,
+            "parent" => parent = Some(attr::string(&meta)?),
+            _ => return Err(attr::unknown(&meta, &name)),
         }
         Ok(())
     });
@@ -589,24 +570,11 @@ fn report_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, sy
     let mut layout = (2u32, 2u32); // Default 2x2 grid
 
     let parser = syn::meta::parser(|meta| {
-        let path_str = meta
-            .path
-            .get_ident()
-            .map(|i| i.to_string())
-            .unwrap_or_default();
-
-        match path_str.as_str() {
-            "title" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                title = value.value();
-            }
-            "layout" => {
-                let value: syn::LitStr = meta.value()?.parse()?;
-                layout = parse_grid_layout(&value.value()).unwrap_or((2, 2));
-            }
-            _ => {
-                return Err(meta.error(format!("unknown attribute: {}", path_str)));
-            }
+        let name = attr::name(&meta);
+        match name.as_str() {
+            "title" => title = attr::string(&meta)?,
+            "layout" => layout = parse_grid_layout(&attr::string(&meta)?).unwrap_or((2, 2)),
+            _ => return Err(attr::unknown(&meta, &name)),
         }
         Ok(())
     });
@@ -652,4 +620,109 @@ fn parse_grid_layout(s: &str) -> Option<(u32, u32)> {
     }
 
     None
+}
+
+/// Define a comparison group for multiple benchmarks
+///
+/// # Example
+///
+/// ```ignore
+/// #[flux::compare(
+///     id = "parser_showdown",
+///     title = "JSON Parser Comparison",
+///     benchmarks = ["bench_serde", "bench_simd_json", "bench_sonic", "bench_jiter", "bench_yyjson"],
+///     baseline = "bench_serde",
+///     metric = "mean"
+/// )]
+/// struct ParserComparison;
+/// ```
+///
+/// This creates a comparison group that will:
+/// - Display all benchmarks in a comparison table
+/// - Compute speedup ratios vs the baseline
+/// - Generate data for comparison charts
+#[proc_macro_attribute]
+pub fn compare(args: TokenStream, item: TokenStream) -> TokenStream {
+    let args = TokenStream2::from(args);
+    let input = parse_macro_input!(item as ItemStruct);
+
+    compare_impl(args, input)
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+fn compare_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, syn::Error> {
+    let struct_name = &input.ident;
+    let struct_name_str = struct_name.to_string();
+
+    let mut id = struct_name_str.clone();
+    let mut title = struct_name_str.clone();
+    let mut benchmarks: Vec<String> = Vec::new();
+    let mut baseline: Option<String> = None;
+    let mut metric = "mean".to_string();
+    let mut group: Option<String> = None;
+    let mut x_value: Option<String> = None;
+    let mut series: Option<Vec<String>> = None;
+
+    let parser = syn::meta::parser(|meta| {
+        let name = attr::name(&meta);
+        match name.as_str() {
+            "id" => id = attr::string(&meta)?,
+            "title" => title = attr::string(&meta)?,
+            "benchmarks" => benchmarks = attr::string_array(&meta)?,
+            "baseline" => baseline = Some(attr::string(&meta)?),
+            "metric" => metric = attr::string(&meta)?,
+            "group" => group = Some(attr::string(&meta)?),
+            "x" => x_value = Some(attr::string(&meta)?),
+            "series" => series = Some(attr::string_array(&meta)?),
+            _ => return Err(attr::unknown(&meta, &name)),
+        }
+        Ok(())
+    });
+
+    syn::parse::Parser::parse2(parser, args)?;
+
+    if benchmarks.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &input,
+            "compare requires at least one benchmark in 'benchmarks' list",
+        ));
+    }
+
+    let baseline_expr = match &baseline {
+        Some(b) => quote! { Some(#b) },
+        None => quote! { None },
+    };
+
+    let group_expr = match &group {
+        Some(g) => quote! { Some(#g) },
+        None => quote! { None },
+    };
+
+    let x_expr = match &x_value {
+        Some(x) => quote! { Some(#x) },
+        None => quote! { None },
+    };
+
+    let series_expr = match &series {
+        Some(s) => quote! { Some(&[#(#s),*]) },
+        None => quote! { None },
+    };
+
+    Ok(quote! {
+        #input
+
+        ::fluxbench::internal::inventory::submit! {
+            ::fluxbench::CompareDef {
+                id: #id,
+                title: #title,
+                benchmarks: &[#(#benchmarks),*],
+                baseline: #baseline_expr,
+                metric: #metric,
+                group: #group_expr,
+                x: #x_expr,
+                series: #series_expr,
+            }
+        }
+    })
 }
