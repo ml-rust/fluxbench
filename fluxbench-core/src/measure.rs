@@ -1,6 +1,6 @@
 //! High-Precision Timing
 //!
-//! Uses RDTSC on x86_64 for minimal overhead timing,
+//! Uses RDTSCP on x86_64 for minimal overhead serializing cycle counting,
 //! with fallback to std::time::Instant on other platforms.
 
 use std::time::Duration;
@@ -22,13 +22,13 @@ impl Instant {
     pub fn now() -> Self {
         #[cfg(target_arch = "x86_64")]
         {
-            // SAFETY: RDTSC is always safe on x86_64.
-            // lfence serializes instruction flow so that RDTSC reads a
-            // consistent cycle counter (Intel SDM Vol. 3B §18.7.3).
+            // SAFETY: RDTSCP is available on all x86_64 CPUs since ~2006.
+            // It is serializing by design — waits for all prior instructions
+            // to complete before reading the cycle counter, unlike RDTSC which
+            // requires a separate lfence.
             unsafe {
-                std::arch::x86_64::_mm_lfence();
-                let tsc = std::arch::x86_64::_rdtsc();
-                std::arch::x86_64::_mm_lfence();
+                let mut _aux: u32 = 0;
+                let tsc = std::arch::x86_64::__rdtscp(&mut _aux);
                 Self {
                     instant: std::time::Instant::now(),
                     tsc,
@@ -80,8 +80,8 @@ impl Timer {
     pub fn start() -> Self {
         #[cfg(target_arch = "x86_64")]
         let cycles_start = unsafe {
-            std::arch::x86_64::_mm_lfence();
-            std::arch::x86_64::_rdtsc()
+            let mut _aux: u32 = 0;
+            std::arch::x86_64::__rdtscp(&mut _aux)
         };
         #[cfg(not(target_arch = "x86_64"))]
         let cycles_start = 0;
@@ -101,8 +101,8 @@ impl Timer {
         #[cfg(target_arch = "x86_64")]
         let cycles = {
             let now = unsafe {
-                std::arch::x86_64::_mm_lfence();
-                std::arch::x86_64::_rdtsc()
+                let mut _aux: u32 = 0;
+                std::arch::x86_64::__rdtscp(&mut _aux)
             };
             now.saturating_sub(self.cycles_start)
         };
