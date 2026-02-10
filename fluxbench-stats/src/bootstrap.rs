@@ -94,14 +94,20 @@ pub fn compute_bootstrap(
     }
 
     if config.confidence_level <= 0.0 || config.confidence_level >= 1.0 {
-        return Err(BootstrapError::InvalidConfidenceLevel(config.confidence_level));
+        return Err(BootstrapError::InvalidConfidenceLevel(
+            config.confidence_level,
+        ));
     }
 
     let n = samples.len();
     let point_estimate = mean(samples);
 
     // Check for zero variance
-    let variance = samples.iter().map(|x| (x - point_estimate).powi(2)).sum::<f64>() / n as f64;
+    let variance = samples
+        .iter()
+        .map(|x| (x - point_estimate).powi(2))
+        .sum::<f64>()
+        / n as f64;
     if variance == 0.0 {
         return Ok(BootstrapResult {
             point_estimate,
@@ -167,16 +173,13 @@ pub fn compute_bootstrap(
 fn generate_bootstrap_means_parallel(samples: &[f64], iterations: usize) -> Vec<f64> {
     (0..iterations)
         .into_par_iter()
-        .map_init(
-            thread_rng,
-            |rng, _| {
-                let mut sum = 0.0;
-                for _ in 0..samples.len() {
-                    sum += *samples.choose(rng).unwrap();
-                }
-                sum / samples.len() as f64
-            },
-        )
+        .map_init(thread_rng, |rng, _| {
+            let mut sum = 0.0;
+            for _ in 0..samples.len() {
+                sum += *samples.choose(rng).unwrap();
+            }
+            sum / samples.len() as f64
+        })
         .collect()
 }
 
@@ -404,7 +407,10 @@ mod tests {
         let config = BootstrapConfig::default();
 
         let result = compute_bootstrap(&samples, &config);
-        assert!(matches!(result, Err(BootstrapError::NotEnoughSamples { .. })));
+        assert!(matches!(
+            result,
+            Err(BootstrapError::NotEnoughSamples { .. })
+        ));
     }
 
     #[test]

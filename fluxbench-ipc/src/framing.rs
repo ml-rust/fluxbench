@@ -47,8 +47,8 @@ where
     T: Serialize<AllocSerializer<256>>,
 {
     // Serialize the message
-    let bytes = rkyv::to_bytes::<_, 256>(message)
-        .map_err(|e| FrameError::Serialization(e.to_string()))?;
+    let bytes =
+        rkyv::to_bytes::<_, 256>(message).map_err(|e| FrameError::Serialization(e.to_string()))?;
 
     let len = bytes.len();
     if len > MAX_FRAME_SIZE {

@@ -4,7 +4,7 @@
 //! using bootstrap resampling to compute probability of regression.
 
 use crate::outliers::OutlierMethod;
-use crate::summary::{compute_summary, SummaryStatistics};
+use crate::summary::{SummaryStatistics, compute_summary};
 use rand::prelude::*;
 use rayon::prelude::*;
 
@@ -119,24 +119,21 @@ pub fn compare_distributions(
     // Bootstrap the difference of means
     let bootstrap_diffs: Vec<f64> = (0..config.bootstrap_iterations)
         .into_par_iter()
-        .map_init(
-            thread_rng,
-            |rng, _| {
-                // Resample baseline
-                let baseline_mean: f64 = (0..baseline.len())
-                    .map(|_| baseline[rng.gen_range(0..baseline.len())])
-                    .sum::<f64>()
-                    / baseline.len() as f64;
+        .map_init(thread_rng, |rng, _| {
+            // Resample baseline
+            let baseline_mean: f64 = (0..baseline.len())
+                .map(|_| baseline[rng.gen_range(0..baseline.len())])
+                .sum::<f64>()
+                / baseline.len() as f64;
 
-                // Resample candidate
-                let candidate_mean: f64 = (0..candidate.len())
-                    .map(|_| candidate[rng.gen_range(0..candidate.len())])
-                    .sum::<f64>()
-                    / candidate.len() as f64;
+            // Resample candidate
+            let candidate_mean: f64 = (0..candidate.len())
+                .map(|_| candidate[rng.gen_range(0..candidate.len())])
+                .sum::<f64>()
+                / candidate.len() as f64;
 
-                candidate_mean - baseline_mean
-            },
-        )
+            candidate_mean - baseline_mean
+        })
         .collect();
 
     // Probability of regression (candidate slower = positive difference)
@@ -145,7 +142,7 @@ pub fn compare_distributions(
 
     // Confidence interval of the difference
     let mut sorted_diffs = bootstrap_diffs.clone();
-    sorted_diffs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted_diffs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let alpha = 1.0 - config.confidence_level;
     let lower_idx = (alpha / 2.0 * config.bootstrap_iterations as f64) as usize;
@@ -233,7 +230,10 @@ mod tests {
         assert!(result.probability_regression > 0.3 && result.probability_regression < 0.7);
         assert!(result.relative_change.abs() < 1.0);
         assert!(!result.is_significant);
-        assert_eq!(result.effect_interpretation, EffectInterpretation::Negligible);
+        assert_eq!(
+            result.effect_interpretation,
+            EffectInterpretation::Negligible
+        );
     }
 
     #[test]

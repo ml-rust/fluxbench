@@ -14,15 +14,15 @@ mod percentiles;
 mod summary;
 
 pub use bootstrap::{
-    compute_bootstrap, BootstrapConfig, BootstrapMethod, BootstrapResult, ConfidenceInterval,
+    BootstrapConfig, BootstrapMethod, BootstrapResult, ConfidenceInterval, compute_bootstrap,
 };
 pub use comparison::{
-    compare_distributions, ComparisonConfig, ComparisonError, ComparisonResult,
-    EffectInterpretation,
+    ComparisonConfig, ComparisonError, ComparisonResult, EffectInterpretation,
+    compare_distributions,
 };
-pub use outliers::{detect_outliers, OutlierAnalysis, OutlierMethod};
-pub use percentiles::{compute_percentile, compute_percentiles, Percentiles};
-pub use summary::{compute_cycles_stats, compute_summary, CyclesStatistics, SummaryStatistics};
+pub use outliers::{OutlierAnalysis, OutlierMethod, detect_outliers};
+pub use percentiles::{Percentiles, compute_percentile, compute_percentiles};
+pub use summary::{CyclesStatistics, SummaryStatistics, compute_cycles_stats, compute_summary};
 
 /// Threshold below which BCa method is used instead of percentile
 pub const BCA_THRESHOLD: usize = 100;

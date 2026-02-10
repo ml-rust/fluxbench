@@ -2,7 +2,9 @@
 //!
 //! Provides variable bindings for expression evaluation.
 
-use evalexpr::{eval_with_context, ContextWithMutableVariables, HashMapContext, Value, EvalexprError};
+use evalexpr::{
+    ContextWithMutableVariables, EvalexprError, HashMapContext, Value, eval_with_context,
+};
 use fxhash::FxHashMap;
 use thiserror::Error;
 
@@ -51,8 +53,8 @@ impl MetricContext {
         }
 
         // Evaluate
-        let result =
-            eval_with_context(expression, &ctx).map_err(|e| ContextError::EvalError(e.to_string()))?;
+        let result = eval_with_context(expression, &ctx)
+            .map_err(|e| ContextError::EvalError(e.to_string()))?;
 
         // Convert to f64
         match result {

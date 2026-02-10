@@ -4,7 +4,7 @@
 //! - Mean, median, stddev computed from CLEANED data (outliers removed)
 //! - Min, max, percentiles computed from ALL data (outliers preserved)
 
-use crate::outliers::{detect_outliers, OutlierAnalysis, OutlierMethod};
+use crate::outliers::{OutlierAnalysis, OutlierMethod, detect_outliers};
 use crate::percentiles::compute_percentile;
 
 /// Comprehensive summary statistics
@@ -99,12 +99,12 @@ pub fn compute_summary(samples: &[f64], outlier_method: OutlierMethod) -> Summar
     let min = all
         .iter()
         .cloned()
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap_or(0.0);
     let max = all
         .iter()
         .cloned()
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap_or(0.0);
 
     // Percentiles from ALL data (outliers ARE the tail signal)
@@ -170,7 +170,7 @@ pub fn compute_cycles_stats(cycles: &[u32], nanos: &[f64]) -> CyclesStatistics {
 
     // Median cycles
     let mut sorted = cycles_f64.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median_cycles = if sorted.len() % 2 == 0 {
         let mid = sorted.len() / 2;
         (sorted[mid - 1] + sorted[mid]) / 2.0
