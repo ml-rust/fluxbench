@@ -7,6 +7,8 @@ use fluxbench_ipc::{
     BenchmarkConfig, FrameError, FrameReader, FrameWriter, Sample, SupervisorCommand,
     WorkerCapabilities, WorkerMessage,
 };
+use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use std::env;
 use std::os::unix::io::AsRawFd;
 use std::process::{Child, Command, Stdio};
@@ -245,10 +247,7 @@ impl WorkerHandle {
                         ));
                     }
                     PollResult::Error(e) => {
-                        return Err(SupervisorError::WorkerCrashed(format!(
-                            "Pipe error: {}",
-                            e
-                        )));
+                        return Err(SupervisorError::WorkerCrashed(format!("Pipe error: {}", e)));
                     }
                 }
             }
@@ -375,8 +374,6 @@ impl Drop for WorkerHandle {
 pub struct Supervisor {
     config: BenchmarkConfig,
     timeout: Duration,
-    /// Reserved for future parallel worker execution
-    #[allow(dead_code)]
     num_workers: usize,
 }
 
@@ -395,15 +392,38 @@ impl Supervisor {
         &self,
         benchmarks: &[&BenchmarkDef],
     ) -> Result<Vec<IpcBenchmarkResult>, SupervisorError> {
-        let mut results = Vec::with_capacity(benchmarks.len());
-
-        // Run sequentially with a single worker per benchmark
-        // This ensures complete isolation - each benchmark gets a fresh process
-        for bench in benchmarks {
-            let result = self.run_isolated(bench)?;
-            results.push(result);
+        if benchmarks.is_empty() {
+            return Ok(Vec::new());
         }
 
+        // Fast path for single-worker or single-benchmark execution.
+        if self.num_workers == 1 || benchmarks.len() == 1 {
+            let mut results = Vec::with_capacity(benchmarks.len());
+            for bench in benchmarks {
+                results.push(self.run_isolated(bench)?);
+            }
+            return Ok(results);
+        }
+
+        let worker_count = self.num_workers.min(benchmarks.len());
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .build()
+            .map_err(|e| {
+                SupervisorError::IpcError(format!("Failed to build worker pool: {}", e))
+            })?;
+
+        let outcomes: Vec<Result<IpcBenchmarkResult, SupervisorError>> = pool.install(|| {
+            benchmarks
+                .par_iter()
+                .map(|bench| self.run_isolated(bench))
+                .collect()
+        });
+
+        let mut results = Vec::with_capacity(outcomes.len());
+        for outcome in outcomes {
+            results.push(outcome?);
+        }
         Ok(results)
     }
 
@@ -421,43 +441,128 @@ impl Supervisor {
         result
     }
 
+    fn crashed_result(bench: &BenchmarkDef, message: String) -> IpcBenchmarkResult {
+        IpcBenchmarkResult {
+            bench_id: bench.id.to_string(),
+            samples: Vec::new(),
+            total_iterations: 0,
+            total_duration_nanos: 0,
+            status: IpcBenchmarkStatus::Crashed { message },
+        }
+    }
+
+    fn run_with_reuse_indexed(
+        &self,
+        benchmarks: &[(usize, &BenchmarkDef)],
+    ) -> Vec<(usize, IpcBenchmarkResult)> {
+        let mut results = Vec::with_capacity(benchmarks.len());
+        if benchmarks.is_empty() {
+            return results;
+        }
+
+        let mut worker = match WorkerHandle::spawn(self.timeout) {
+            Ok(worker) => Some(worker),
+            Err(e) => {
+                let message = e.to_string();
+                for &(index, bench) in benchmarks {
+                    results.push((index, Self::crashed_result(bench, message.clone())));
+                }
+                return results;
+            }
+        };
+
+        for &(index, bench) in benchmarks {
+            // Re-spawn worker lazily if a previous benchmark crashed it.
+            if worker.is_none() {
+                match WorkerHandle::spawn(self.timeout) {
+                    Ok(new_worker) => worker = Some(new_worker),
+                    Err(e) => {
+                        results.push((index, Self::crashed_result(bench, e.to_string())));
+                        continue;
+                    }
+                }
+            }
+
+            let run_result = match worker.as_mut() {
+                Some(worker) => worker.run_benchmark(bench.id, &self.config),
+                None => unreachable!("worker should exist after spawn check"),
+            };
+
+            match run_result {
+                Ok(result) => results.push((index, result)),
+                Err(e) => {
+                    let worker_is_alive = worker.as_mut().map(|w| w.is_alive()).unwrap_or(false);
+                    if !worker_is_alive {
+                        if let Some(mut dead_worker) = worker.take() {
+                            let _ = dead_worker.kill();
+                        }
+                    }
+                    results.push((index, Self::crashed_result(bench, e.to_string())));
+                }
+            }
+        }
+
+        if let Some(worker) = worker {
+            let _ = worker.shutdown();
+        }
+
+        results
+    }
+
     /// Run benchmarks with worker reuse (less isolation but faster)
     pub fn run_with_reuse(
         &self,
         benchmarks: &[&BenchmarkDef],
     ) -> Result<Vec<IpcBenchmarkResult>, SupervisorError> {
-        let mut results = Vec::with_capacity(benchmarks.len());
-
-        // Spawn a single worker and reuse it
-        let mut worker = WorkerHandle::spawn(self.timeout)?;
-
-        for bench in benchmarks {
-            match worker.run_benchmark(bench.id, &self.config) {
-                Ok(result) => results.push(result),
-                Err(e) => {
-                    // Worker might have crashed, try to spawn a new one
-                    if !worker.is_alive() {
-                        let _ = worker.kill();
-                        worker = WorkerHandle::spawn(self.timeout)?;
-                    }
-                    // Report the error as a crashed benchmark
-                    results.push(IpcBenchmarkResult {
-                        bench_id: bench.id.to_string(),
-                        samples: Vec::new(),
-                        total_iterations: 0,
-                        total_duration_nanos: 0,
-                        status: IpcBenchmarkStatus::Crashed {
-                            message: e.to_string(),
-                        },
-                    });
-                }
-            }
+        if benchmarks.is_empty() {
+            return Ok(Vec::new());
         }
 
-        // Shutdown the worker
-        let _ = worker.shutdown();
+        let indexed_benchmarks: Vec<(usize, &BenchmarkDef)> = benchmarks
+            .iter()
+            .enumerate()
+            .map(|(index, bench)| (index, *bench))
+            .collect();
 
-        Ok(results)
+        let mut indexed_results = if self.num_workers == 1 || benchmarks.len() == 1 {
+            self.run_with_reuse_indexed(&indexed_benchmarks)
+        } else {
+            let worker_count = self.num_workers.min(indexed_benchmarks.len());
+            let mut shards: Vec<Vec<(usize, &BenchmarkDef)>> = vec![Vec::new(); worker_count];
+            for (position, entry) in indexed_benchmarks.into_iter().enumerate() {
+                shards[position % worker_count].push(entry);
+            }
+
+            let pool = ThreadPoolBuilder::new()
+                .num_threads(worker_count)
+                .build()
+                .map_err(|e| {
+                    SupervisorError::IpcError(format!("Failed to build worker pool: {}", e))
+                })?;
+
+            let shard_results: Vec<Vec<(usize, IpcBenchmarkResult)>> = pool.install(|| {
+                shards
+                    .into_par_iter()
+                    .map(|shard| self.run_with_reuse_indexed(&shard))
+                    .collect()
+            });
+
+            shard_results.into_iter().flatten().collect()
+        };
+
+        indexed_results.sort_by_key(|(index, _)| *index);
+        if indexed_results.len() != benchmarks.len() {
+            return Err(SupervisorError::IpcError(format!(
+                "Internal error: expected {} results, got {}",
+                benchmarks.len(),
+                indexed_results.len()
+            )));
+        }
+
+        Ok(indexed_results
+            .into_iter()
+            .map(|(_, result)| result)
+            .collect())
     }
 }
 
