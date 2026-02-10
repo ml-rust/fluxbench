@@ -132,20 +132,25 @@ pub fn compute_bootstrap(
         generate_bootstrap_means_serial(samples, config.iterations)
     };
 
+    // Sort bootstrap means once (shared by both CI methods and avoids per-call allocation)
+    let mut sorted_means = bootstrap_means.clone();
+    sorted_means.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
     // Compute confidence interval
     let (ci, method) = if use_bca {
-        let ci = bca_interval(samples, &bootstrap_means, config.confidence_level);
+        let ci = bca_interval(samples, &sorted_means, config.confidence_level);
         (ci, BootstrapMethod::Bca)
     } else {
-        let ci = percentile_interval(&bootstrap_means, config.confidence_level);
+        let ci = percentile_interval_sorted(&sorted_means, config.confidence_level);
         (ci, BootstrapMethod::Percentile)
     };
 
-    // Compute standard error from bootstrap distribution
-    let bootstrap_mean = mean(&bootstrap_means);
+    // Compute standard error from bootstrap distribution.
+    // By the bootstrap property, mean(bootstrap_means) == point_estimate,
+    // so we reuse it directly to avoid a redundant O(N) pass.
     let se = (bootstrap_means
         .iter()
-        .map(|x| (x - bootstrap_mean).powi(2))
+        .map(|x| (x - point_estimate).powi(2))
         .sum::<f64>()
         / bootstrap_means.len() as f64)
         .sqrt();
@@ -197,11 +202,12 @@ fn generate_bootstrap_means_serial(samples: &[f64], iterations: usize) -> Vec<f6
         .collect()
 }
 
-/// Standard percentile interval
-fn percentile_interval(bootstrap_means: &[f64], confidence: f64) -> (f64, f64) {
-    let mut sorted = bootstrap_means.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
+/// Standard percentile interval from pre-sorted bootstrap means.
+///
+/// # Arguments
+/// * `sorted` — Bootstrap means, **must be pre-sorted in ascending order**.
+/// * `confidence` — Confidence level (e.g. 0.95).
+fn percentile_interval_sorted(sorted: &[f64], confidence: f64) -> (f64, f64) {
     let n = sorted.len();
     let alpha = (1.0 - confidence) / 2.0;
 
@@ -211,21 +217,22 @@ fn percentile_interval(bootstrap_means: &[f64], confidence: f64) -> (f64, f64) {
     (sorted[lower_idx], sorted[upper_idx])
 }
 
-/// BCa (Bias-Corrected and Accelerated) interval
+/// BCa (Bias-Corrected and Accelerated) interval.
 ///
 /// More accurate for small samples and skewed distributions.
-fn bca_interval(samples: &[f64], bootstrap_means: &[f64], confidence: f64) -> (f64, f64) {
+///
+/// # Arguments
+/// * `samples` — Original sample data (unsorted).
+/// * `sorted` — Bootstrap means, **must be pre-sorted in ascending order**.
+/// * `confidence` — Confidence level (e.g. 0.95).
+fn bca_interval(samples: &[f64], sorted: &[f64], confidence: f64) -> (f64, f64) {
     let n = samples.len();
-    let b = bootstrap_means.len();
+    let b = sorted.len();
 
     let theta_hat = mean(samples);
 
-    // Sort bootstrap means
-    let mut sorted = bootstrap_means.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
     // Bias correction factor (z0)
-    let count_below = bootstrap_means.iter().filter(|&&x| x < theta_hat).count();
+    let count_below = sorted.iter().filter(|&&x| x < theta_hat).count();
     let prop = count_below as f64 / b as f64;
     let z0 = normal_quantile(prop.clamp(0.0001, 0.9999));
 
