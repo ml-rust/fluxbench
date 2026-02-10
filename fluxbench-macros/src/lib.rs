@@ -341,14 +341,24 @@ fn validate_signature(func: &ItemFn) -> syn::Result<()> {
 
 fn parse_duration(s: &str) -> Option<u64> {
     let s = s.trim();
+    if s.starts_with('-') {
+        return None;
+    }
     if let Some(ms) = s.strip_suffix("ms") {
-        ms.trim().parse::<u64>().ok().map(|v| v * 1_000_000)
+        ms.trim()
+            .parse::<f64>()
+            .ok()
+            .map(|v| (v * 1_000_000.0) as u64)
     } else if let Some(us) = s.strip_suffix("us").or_else(|| s.strip_suffix("µs")) {
-        us.trim().parse::<u64>().ok().map(|v| v * 1_000)
+        us.trim().parse::<f64>().ok().map(|v| (v * 1_000.0) as u64)
     } else if let Some(ns) = s.strip_suffix("ns") {
-        ns.trim().parse::<u64>().ok()
+        ns.trim().parse::<f64>().ok().map(|v| v as u64)
     } else if let Some(s_val) = s.strip_suffix('s') {
-        s_val.trim().parse::<u64>().ok().map(|v| v * 1_000_000_000)
+        s_val
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|v| (v * 1_000_000_000.0) as u64)
     } else {
         None
     }
