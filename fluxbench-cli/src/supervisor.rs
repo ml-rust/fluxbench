@@ -10,7 +10,8 @@ use fluxbench_ipc::{
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use std::env;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{FromRawFd, RawFd};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -87,90 +88,164 @@ fn wait_for_data(fd: i32, timeout_ms: i32) -> PollResult {
         if pollfd.revents & libc::POLLIN != 0 {
             PollResult::DataAvailable
         } else if pollfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
-            // No data, but pipe error/hangup
             PollResult::PipeClosed
         } else {
-            // Spurious wakeup, treat as timeout
             PollResult::Timeout
         }
+    }
+}
+
+/// Create a pipe pair, returning (read_fd, write_fd).
+fn create_pipe() -> Result<(RawFd, RawFd), std::io::Error> {
+    let mut fds = [0 as RawFd; 2];
+    let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // Set close-on-exec on both ends by default; we'll clear it for the ones we want to pass.
+    for &fd in &fds {
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        }
+    }
+    Ok((fds[0], fds[1]))
+}
+
+/// Close a raw file descriptor.
+fn close_fd(fd: RawFd) {
+    unsafe {
+        libc::close(fd);
+    }
+}
+
+/// Send SIGTERM to a process. Returns `Err` if the signal could not be delivered.
+fn send_sigterm(pid: u32) -> Result<(), std::io::Error> {
+    let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if ret == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
 /// Worker process handle
 pub struct WorkerHandle {
     child: Child,
-    reader: FrameReader<std::process::ChildStdout>,
-    writer: FrameWriter<std::process::ChildStdin>,
+    reader: FrameReader<std::fs::File>,
+    writer: FrameWriter<std::fs::File>,
     capabilities: Option<WorkerCapabilities>,
     timeout: Duration,
-    stdout_fd: i32, // Cache the fd for polling
+    msg_read_fd: RawFd,
 }
 
 impl WorkerHandle {
-    /// Spawn a new worker process
+    /// Spawn a new worker process using fd 3/4 for IPC.
     pub fn spawn(timeout: Duration) -> Result<Self, SupervisorError> {
-        // Get current executable path
         let binary = env::current_exe().map_err(SupervisorError::SpawnFailed)?;
-
-        let mut child = Command::new(&binary)
-            .arg("--flux-worker")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-
-        let stdin = child.stdin.take().expect("stdin should be available");
-        let stdout = child.stdout.take().expect("stdout should be available");
-        let stdout_fd = stdout.as_raw_fd();
-
-        let mut handle = Self {
-            child,
-            reader: FrameReader::new(stdout),
-            writer: FrameWriter::new(stdin),
-            capabilities: None,
-            timeout,
-            stdout_fd,
-        };
-
-        // Wait for Hello message
-        handle.wait_for_hello()?;
-
-        Ok(handle)
+        Self::spawn_impl(&binary, timeout)
     }
 
     /// Spawn a worker for a specific binary (for testing)
     pub fn spawn_binary(binary: &str, timeout: Duration) -> Result<Self, SupervisorError> {
-        let mut child = Command::new(binary)
-            .arg("--flux-worker")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+        Self::spawn_impl(binary.as_ref(), timeout)
+    }
 
-        let stdin = child.stdin.take().expect("stdin should be available");
-        let stdout = child.stdout.take().expect("stdout should be available");
-        let stdout_fd = stdout.as_raw_fd();
+    fn spawn_impl(binary: &std::path::Path, timeout: Duration) -> Result<Self, SupervisorError> {
+        // cmd_pipe: supervisor writes commands → worker reads from fd 3
+        let (cmd_read, cmd_write) = create_pipe()?;
+        // msg_pipe: worker writes messages from fd 4 → supervisor reads
+        let (msg_read, msg_write) = match create_pipe() {
+            Ok(fds) => fds,
+            Err(e) => {
+                close_fd(cmd_read);
+                close_fd(cmd_write);
+                return Err(SupervisorError::SpawnFailed(e));
+            }
+        };
+
+        let mut command = Command::new(binary);
+        command
+            .arg("--flux-worker")
+            .env("FLUX_IPC_FD", "3,4")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+
+        // In the child: dup cmd_read→3, msg_write→4, close originals.
+        unsafe {
+            command.pre_exec(move || {
+                // Move cmd_read to fd 3
+                if cmd_read != 3 {
+                    libc::dup2(cmd_read, 3);
+                    libc::close(cmd_read);
+                }
+                // Clear close-on-exec for fd 3
+                let flags = libc::fcntl(3, libc::F_GETFD);
+                libc::fcntl(3, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+
+                // Move msg_write to fd 4
+                if msg_write != 4 {
+                    libc::dup2(msg_write, 4);
+                    libc::close(msg_write);
+                }
+                // Clear close-on-exec for fd 4
+                let flags = libc::fcntl(4, libc::F_GETFD);
+                libc::fcntl(4, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+
+                // Close the parent-side ends that leaked into the child
+                libc::close(cmd_write);
+                libc::close(msg_read);
+
+                Ok(())
+            });
+        }
+
+        let child = match command.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                close_fd(cmd_read);
+                close_fd(cmd_write);
+                close_fd(msg_read);
+                close_fd(msg_write);
+                return Err(SupervisorError::SpawnFailed(e));
+            }
+        };
+
+        // Close the child-side ends in the parent
+        close_fd(cmd_read);
+        close_fd(msg_write);
+
+        // Wrap parent-side ends in Files
+        let writer_file = unsafe { std::fs::File::from_raw_fd(cmd_write) };
+        let reader_file = unsafe { std::fs::File::from_raw_fd(msg_read) };
+        let msg_read_fd = msg_read;
 
         let mut handle = Self {
             child,
-            reader: FrameReader::new(stdout),
-            writer: FrameWriter::new(stdin),
+            reader: FrameReader::new(reader_file),
+            writer: FrameWriter::new(writer_file),
             capabilities: None,
             timeout,
-            stdout_fd,
+            msg_read_fd,
         };
 
         handle.wait_for_hello()?;
-
         Ok(handle)
     }
 
-    /// Wait for Hello message from worker
+    /// Wait for Hello message from worker and validate protocol version
     fn wait_for_hello(&mut self) -> Result<(), SupervisorError> {
         let msg: WorkerMessage = self.reader.read()?;
 
         match msg {
             WorkerMessage::Hello(caps) => {
+                if caps.protocol_version != fluxbench_ipc::PROTOCOL_VERSION {
+                    return Err(SupervisorError::ProtocolError {
+                        expected: format!("protocol version {}", fluxbench_ipc::PROTOCOL_VERSION),
+                        got: format!("protocol version {}", caps.protocol_version),
+                    });
+                }
                 self.capabilities = Some(caps);
                 Ok(())
             }
@@ -206,26 +281,25 @@ impl WorkerHandle {
             // Check timeout
             let remaining = self.timeout.saturating_sub(start.elapsed());
             if remaining.is_zero() {
-                return Err(SupervisorError::Timeout);
+                // Graceful timeout: SIGTERM → drain → SIGKILL
+                return self.handle_timeout(bench_id, all_samples);
             }
 
-            // Check if there's buffered data, or poll for new data
+            // Check if there's buffered data, or poll for new data.
+            // Even with buffered data we verify the worker is alive — the buffer
+            // might hold an incomplete frame that will never be completed.
             if self.reader.has_buffered_data() {
-                // Have buffered data - but still check if worker is alive before blocking read
-                // (the buffered data might be an incomplete frame)
                 if !self.is_alive() {
                     return Err(SupervisorError::WorkerCrashed(
                         "Worker process crashed with partial data buffered".to_string(),
                     ));
                 }
             } else {
-                // Poll for data with 100ms intervals (allows checking worker status)
                 let poll_timeout = remaining.min(Duration::from_millis(100));
-                let poll_result = wait_for_data(self.stdout_fd, poll_timeout.as_millis() as i32);
+                let poll_result = wait_for_data(self.msg_read_fd, poll_timeout.as_millis() as i32);
 
                 match poll_result {
                     PollResult::DataAvailable => {
-                        // Data available - check if worker is still alive before blocking read
                         if !self.is_alive() {
                             return Err(SupervisorError::WorkerCrashed(
                                 "Worker process crashed with data in pipe".to_string(),
@@ -233,13 +307,12 @@ impl WorkerHandle {
                         }
                     }
                     PollResult::Timeout => {
-                        // No data - check if worker is still alive
                         if !self.is_alive() {
                             return Err(SupervisorError::WorkerCrashed(
                                 "Worker process exited unexpectedly".to_string(),
                             ));
                         }
-                        continue; // Poll again
+                        continue;
                     }
                     PollResult::PipeClosed => {
                         return Err(SupervisorError::WorkerCrashed(
@@ -252,8 +325,8 @@ impl WorkerHandle {
                 }
             }
 
-            // Read next message (blocking, but poll confirmed data is available)
-            let msg: WorkerMessage = match self.reader.read() {
+            // Read next message (blocking — poll above confirmed data is available)
+            let msg: WorkerMessage = match self.reader.read::<WorkerMessage>() {
                 Ok(msg) => msg,
                 Err(FrameError::EndOfStream) => {
                     return Err(SupervisorError::WorkerCrashed(
@@ -275,11 +348,9 @@ impl WorkerHandle {
                     all_samples.extend(batch.samples);
                 }
                 WorkerMessage::WarmupComplete { .. } => {
-                    // Warmup done, measurement phase starting
                     continue;
                 }
                 WorkerMessage::Progress { .. } => {
-                    // Progress update, continue
                     continue;
                 }
                 WorkerMessage::Complete {
@@ -322,10 +393,53 @@ impl WorkerHandle {
         }
     }
 
+    /// Handle timeout: send SIGTERM, drain remaining messages for 500ms, then SIGKILL.
+    fn handle_timeout(
+        &mut self,
+        _bench_id: &str,
+        mut samples: Vec<Sample>,
+    ) -> Result<IpcBenchmarkResult, SupervisorError> {
+        // Send SIGTERM for graceful shutdown (ignore error — worker may already be dead)
+        let _ = send_sigterm(self.child.id());
+
+        // Drain any messages the worker flushes in response to SIGTERM (500ms window)
+        let drain_deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            let remaining = drain_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+
+            match wait_for_data(self.msg_read_fd, remaining.as_millis() as i32) {
+                PollResult::DataAvailable => {
+                    match self.reader.read::<WorkerMessage>() {
+                        Ok(WorkerMessage::SampleBatch(batch)) => {
+                            samples.extend(batch.samples);
+                        }
+                        Ok(WorkerMessage::Complete { .. }) => {
+                            // Worker finished in time after SIGTERM
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+                PollResult::PipeClosed => break,
+                _ => break,
+            }
+        }
+
+        // Force kill if still alive
+        if self.is_alive() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+
+        Err(SupervisorError::Timeout)
+    }
+
     /// Ping the worker to check if it's alive
     pub fn ping(&mut self) -> Result<bool, SupervisorError> {
         self.writer.write(&SupervisorCommand::Ping)?;
-        // Worker doesn't respond to ping, just continues
         Ok(true)
     }
 
@@ -338,7 +452,6 @@ impl WorkerHandle {
     /// Shutdown the worker gracefully
     pub fn shutdown(mut self) -> Result<(), SupervisorError> {
         self.writer.write(&SupervisorCommand::Shutdown)?;
-        // Wait for process to exit
         let _ = self.child.wait();
         Ok(())
     }
@@ -346,9 +459,9 @@ impl WorkerHandle {
     /// Check if worker process is still running
     pub fn is_alive(&mut self) -> bool {
         match self.child.try_wait() {
-            Ok(Some(_)) => false, // Exited
-            Ok(None) => true,     // Still running
-            Err(_) => false,      // Error, assume dead
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(_) => false,
         }
     }
 
@@ -362,9 +475,13 @@ impl WorkerHandle {
 
 impl Drop for WorkerHandle {
     fn drop(&mut self) {
-        // Try to kill the worker if it's still running
         if self.is_alive() {
-            let _ = self.child.kill();
+            // Graceful: SIGTERM first, brief wait, then SIGKILL
+            let _ = send_sigterm(self.child.id());
+            std::thread::sleep(Duration::from_millis(50));
+            if self.is_alive() {
+                let _ = self.child.kill();
+            }
             let _ = self.child.wait();
         }
     }
@@ -396,7 +513,6 @@ impl Supervisor {
             return Ok(Vec::new());
         }
 
-        // Fast path for single-worker or single-benchmark execution.
         if self.num_workers == 1 || benchmarks.len() == 1 {
             let mut results = Vec::with_capacity(benchmarks.len());
             for bench in benchmarks {
@@ -429,15 +545,9 @@ impl Supervisor {
 
     /// Run a single benchmark in an isolated worker process
     fn run_isolated(&self, bench: &BenchmarkDef) -> Result<IpcBenchmarkResult, SupervisorError> {
-        // Spawn a fresh worker for this benchmark
         let mut worker = WorkerHandle::spawn(self.timeout)?;
-
-        // Run the benchmark
         let result = worker.run_benchmark(bench.id, &self.config);
-
-        // Always try to shutdown cleanly
         let _ = worker.shutdown();
-
         result
     }
 
@@ -472,7 +582,6 @@ impl Supervisor {
         };
 
         for &(index, bench) in benchmarks {
-            // Re-spawn worker lazily if a previous benchmark crashed it.
             if worker.is_none() {
                 match WorkerHandle::spawn(self.timeout) {
                     Ok(new_worker) => worker = Some(new_worker),
@@ -570,16 +679,12 @@ impl Supervisor {
 mod tests {
     use super::*;
 
-    // Note: These tests require a built flux-examples binary
-    // They are integration tests that should be run manually
-
     #[test]
     #[ignore] // Requires built binary
     fn test_supervisor_spawn() {
         let timeout = Duration::from_secs(30);
         let config = BenchmarkConfig::default();
         let supervisor = Supervisor::new(config, timeout, 1);
-        // Just verify it compiles
         assert_eq!(supervisor.num_workers, 1);
     }
 }

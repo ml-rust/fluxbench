@@ -8,25 +8,84 @@ use fluxbench_ipc::{
     BenchmarkConfig, FailureKind, FrameReader, FrameWriter, SampleRingBuffer, SupervisorCommand,
     WorkerCapabilities, WorkerMessage,
 };
-use std::io::{stdin, stdout};
+use std::os::unix::io::FromRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Global flag set by SIGTERM handler to request graceful shutdown.
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Check if a graceful shutdown has been requested via SIGTERM.
+pub fn shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
+}
+
+/// Install a SIGTERM handler that sets the `SHUTDOWN_REQUESTED` flag.
+/// The handler is async-signal-safe (only sets an atomic).
+fn install_sigterm_handler() {
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = sigterm_handler as usize;
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut sa.sa_mask);
+        libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
+    }
+}
+
+extern "C" fn sigterm_handler(_sig: libc::c_int) {
+    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// IPC transport: either inherited fd pair or stdin/stdout fallback.
+enum IpcTransport {
+    Fds { read_fd: i32, write_fd: i32 },
+    Stdio,
+}
+
+fn detect_transport() -> IpcTransport {
+    if let Ok(val) = std::env::var("FLUX_IPC_FD") {
+        let parts: Vec<&str> = val.split(',').collect();
+        if parts.len() == 2 {
+            if let (Ok(r), Ok(w)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
+                return IpcTransport::Fds {
+                    read_fd: r,
+                    write_fd: w,
+                };
+            }
+        }
+        eprintln!("fluxbench: warning: invalid FLUX_IPC_FD={val:?}, falling back to stdio");
+    }
+    IpcTransport::Stdio
+}
 
 /// Worker main loop
 pub struct WorkerMain {
-    reader: FrameReader<std::io::Stdin>,
-    writer: FrameWriter<std::io::Stdout>,
+    reader: FrameReader<Box<dyn std::io::Read>>,
+    writer: FrameWriter<Box<dyn std::io::Write>>,
 }
 
 impl WorkerMain {
-    /// Create a new worker connected to stdin/stdout
+    /// Create a new worker, using fd 3/4 if FLUX_IPC_FD is set, otherwise stdin/stdout.
     pub fn new() -> Self {
-        Self {
-            reader: FrameReader::new(stdin()),
-            writer: FrameWriter::new(stdout()),
+        match detect_transport() {
+            IpcTransport::Fds { read_fd, write_fd } => {
+                let read_file = unsafe { std::fs::File::from_raw_fd(read_fd) };
+                let write_file = unsafe { std::fs::File::from_raw_fd(write_fd) };
+                Self {
+                    reader: FrameReader::new(Box::new(read_file) as Box<dyn std::io::Read>),
+                    writer: FrameWriter::new(Box::new(write_file) as Box<dyn std::io::Write>),
+                }
+            }
+            IpcTransport::Stdio => Self {
+                reader: FrameReader::new(Box::new(std::io::stdin()) as Box<dyn std::io::Read>),
+                writer: FrameWriter::new(Box::new(std::io::stdout()) as Box<dyn std::io::Write>),
+            },
         }
     }
 
     /// Run the worker main loop
     pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        install_sigterm_handler();
+
         // Send capabilities
         self.writer
             .write(&WorkerMessage::Hello(WorkerCapabilities::default()))?;
@@ -36,22 +95,26 @@ impl WorkerMain {
 
         // Process commands
         loop {
+            if shutdown_requested() {
+                break;
+            }
+
             let command: SupervisorCommand = self.reader.read()?;
 
             match command {
                 SupervisorCommand::Run { bench_id, config } => {
                     self.run_benchmark(&bench_id, &config)?;
+                    if shutdown_requested() {
+                        break;
+                    }
                 }
                 SupervisorCommand::Abort => {
-                    // Acknowledge and stop current work
                     break;
                 }
                 SupervisorCommand::Shutdown => {
                     break;
                 }
-                SupervisorCommand::Ping => {
-                    // Just acknowledge by continuing
-                }
+                SupervisorCommand::Ping => {}
             }
         }
 
@@ -127,7 +190,11 @@ impl WorkerMain {
                     "Unknown panic".to_string()
                 };
 
-                // Capture backtrace - requires RUST_BACKTRACE=1 for full traces
+                // Flush any samples collected before the panic
+                if let Some(batch) = ring_buffer.flush_final() {
+                    let _ = self.writer.write(&WorkerMessage::SampleBatch(batch));
+                }
+
                 let backtrace = std::backtrace::Backtrace::capture();
                 let backtrace_str = match backtrace.status() {
                     std::backtrace::BacktraceStatus::Captured => Some(backtrace.to_string()),
