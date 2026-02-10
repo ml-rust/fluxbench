@@ -10,8 +10,8 @@
 //!   cargo run --example benchmarks -- list              # List benchmarks
 //!   cargo run --example benchmarks -- --group sorting   # Run only sorting group
 
-use fluxbench::prelude::*;
 use fluxbench::bench;
+use fluxbench::prelude::*;
 use std::hint::black_box;
 
 // ============================================================================
@@ -146,9 +146,7 @@ fn bench_will_panic(b: &mut Bencher) {
 /// Benchmark that runs after the crashing one - should still work in isolated mode
 #[bench(group = "crash_test")]
 fn bench_after_crash(b: &mut Bencher) {
-    b.iter(|| {
-        black_box(42 + 17)
-    });
+    b.iter(|| black_box(42 + 17));
 }
 
 // ============================================================================
@@ -162,7 +160,7 @@ fn bench_sort_small(b: &mut Bencher) {
     let mut rng = rand::thread_rng();
 
     b.iter(|| {
-        let mut data: Vec<i32> = (0..100).map(|_| rng.gen()).collect();
+        let mut data: Vec<i32> = (0..100).map(|_| rng.r#gen()).collect();
         data.sort();
         black_box(data)
     });
@@ -175,7 +173,7 @@ fn bench_sort_medium(b: &mut Bencher) {
     let mut rng = rand::thread_rng();
 
     b.iter(|| {
-        let mut data: Vec<i32> = (0..10_000).map(|_| rng.gen()).collect();
+        let mut data: Vec<i32> = (0..10_000).map(|_| rng.r#gen()).collect();
         data.sort();
         black_box(data)
     });
@@ -312,17 +310,23 @@ fn bench_fibonacci_iter(b: &mut Bencher) {
 // Verifications - Compare Benchmark Results
 // ============================================================================
 
-use fluxbench::verify;
 use fluxbench::synthetic;
+use fluxbench::verify;
 
 /// Verify iterative fibonacci is faster than naive recursive
 /// Uses mean timing: bench_fibonacci_iter < bench_fibonacci_naive
-#[verify(expr = "bench_fibonacci_iter < bench_fibonacci_naive", severity = "critical")]
+#[verify(
+    expr = "bench_fibonacci_iter < bench_fibonacci_naive",
+    severity = "critical"
+)]
 #[allow(dead_code)]
 struct IterFasterThanNaive;
 
 /// Verify iterative is at least 100x faster (it should be ~1000x faster)
-#[verify(expr = "bench_fibonacci_naive / bench_fibonacci_iter > 100", severity = "warning")]
+#[verify(
+    expr = "bench_fibonacci_naive / bench_fibonacci_iter > 100",
+    severity = "warning"
+)]
 #[allow(dead_code)]
 struct IterMuchFaster;
 
@@ -332,7 +336,11 @@ struct IterMuchFaster;
 struct IterP99Under1ms;
 
 /// Compute speedup ratio: how many times faster is iterative?
-#[synthetic(id = "fib_speedup", formula = "bench_fibonacci_naive / bench_fibonacci_iter", unit = "x")]
+#[synthetic(
+    id = "fib_speedup",
+    formula = "bench_fibonacci_naive / bench_fibonacci_iter",
+    unit = "x"
+)]
 #[allow(dead_code)]
 struct FibSpeedup;
 
@@ -387,6 +395,7 @@ fn bench_vec_sum_100(b: &mut Bencher) {
 }
 
 #[bench(group = "scaling")]
+#[allow(clippy::unnecessary_fold)] // Intentionally benchmark fold() against sum()
 fn bench_vec_fold_100(b: &mut Bencher) {
     let data: Vec<i64> = (0..100).collect();
     b.iter(|| black_box(data.iter().fold(0i64, |a, b| a + b)));
@@ -399,6 +408,7 @@ fn bench_vec_sum_1000(b: &mut Bencher) {
 }
 
 #[bench(group = "scaling")]
+#[allow(clippy::unnecessary_fold)] // Intentionally benchmark fold() against sum()
 fn bench_vec_fold_1000(b: &mut Bencher) {
     let data: Vec<i64> = (0..1000).collect();
     b.iter(|| black_box(data.iter().fold(0i64, |a, b| a + b)));
@@ -411,6 +421,7 @@ fn bench_vec_sum_10000(b: &mut Bencher) {
 }
 
 #[bench(group = "scaling")]
+#[allow(clippy::unnecessary_fold)] // Intentionally benchmark fold() against sum()
 fn bench_vec_fold_10000(b: &mut Bencher) {
     let data: Vec<i64> = (0..10000).collect();
     b.iter(|| black_box(data.iter().fold(0i64, |a, b| a + b)));

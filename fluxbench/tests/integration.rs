@@ -2,9 +2,11 @@
 //!
 //! These tests verify the end-to-end behavior of the benchmarking system.
 
-use fluxbench::{compute_bootstrap, compute_summary, Bencher, BootstrapConfig, MetricContext};
-use fluxbench_logic::{run_verifications, Severity, Verification, VerificationContext};
-use fluxbench_stats::{compare_distributions, compute_cycles_stats, ComparisonConfig, OutlierMethod};
+use fluxbench::{Bencher, BootstrapConfig, MetricContext, compute_bootstrap, compute_summary};
+use fluxbench_logic::{Severity, Verification, VerificationContext, run_verifications};
+use fluxbench_stats::{
+    ComparisonConfig, OutlierMethod, compare_distributions, compute_cycles_stats,
+};
 
 /// Test that the Bencher collects samples correctly
 #[test]
@@ -53,7 +55,7 @@ fn test_iter_with_setup() {
 
     for _ in 0..5 {
         bencher.iter_with_setup(
-            || vec![1u64; 1000], // Heavy setup
+            || vec![1u64; 1000],       // Heavy setup
             |v| v.iter().sum::<u64>(), // Light measurement
         );
     }
@@ -241,7 +243,10 @@ fn test_effect_size_interpretation() {
 
     // Large difference should have large effect size
     // With mean diff of 100 and stddev ~2.87, Cohen's d ≈ 34.8 (huge)
-    assert_eq!(large_result.effect_interpretation, EffectInterpretation::Large);
+    assert_eq!(
+        large_result.effect_interpretation,
+        EffectInterpretation::Large
+    );
 
     // Effect size magnitude makes sense
     assert!(large_result.effect_size.abs() > small_result.effect_size.abs());
