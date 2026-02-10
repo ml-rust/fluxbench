@@ -47,7 +47,7 @@ use std::time::Instant;
 /// FluxBench CLI arguments
 #[derive(Parser, Debug)]
 #[command(name = "fluxbench")]
-#[command(author, version, about = "Production-grade benchmarking for Rust")]
+#[command(author, version, about = "FluxBench - benchmarking framework for Rust")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

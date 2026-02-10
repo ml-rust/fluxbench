@@ -1,6 +1,6 @@
 //! # FluxBench
 //!
-//! Production-grade benchmarking for Rust.
+//! Benchmarking framework for Rust.
 //!
 //! FluxBench is a next-generation benchmarking platform that provides:
 //! - **Process Isolation**: Crash-resilient "Fail-Late" architecture

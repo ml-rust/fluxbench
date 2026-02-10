@@ -1,6 +1,6 @@
 # FluxBench
 
-Production-grade benchmarking for Rust with crash isolation, statistical rigor, and CI integration.
+Benchmarking framework for Rust with crash isolation, statistical rigor, and CI integration.
 
 ## Features
 
