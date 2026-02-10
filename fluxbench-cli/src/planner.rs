@@ -70,7 +70,9 @@ pub fn build_plan(
     // Sort alphabetically for deterministic execution order
     selected.sort_by_key(|b| b.id);
 
-    ExecutionPlan { benchmarks: selected }
+    ExecutionPlan {
+        benchmarks: selected,
+    }
 }
 
 #[cfg(test)]
@@ -78,7 +80,11 @@ mod tests {
     use super::*;
     use fluxbench_core::Severity;
 
-    fn make_bench(id: &'static str, group: &'static str, tags: &'static [&'static str]) -> BenchmarkDef {
+    fn make_bench(
+        id: &'static str,
+        group: &'static str,
+        tags: &'static [&'static str],
+    ) -> BenchmarkDef {
         BenchmarkDef {
             id,
             name: id,
@@ -96,10 +102,15 @@ mod tests {
 
     #[test]
     fn test_no_filter() {
-        let benches = [make_bench("c_bench", "default", &[]),
+        let benches = [
+            make_bench("c_bench", "default", &[]),
             make_bench("a_bench", "default", &[]),
-            make_bench("b_bench", "default", &[])];
-        let refs: Vec<_> = benches.iter().map(|b| unsafe { &*(b as *const _) }).collect();
+            make_bench("b_bench", "default", &[]),
+        ];
+        let refs: Vec<_> = benches
+            .iter()
+            .map(|b| unsafe { &*(b as *const _) })
+            .collect();
 
         let plan = build_plan(refs, None, None, None, None);
 
@@ -112,10 +123,15 @@ mod tests {
 
     #[test]
     fn test_group_filter() {
-        let benches = [make_bench("bench1", "group_a", &[]),
+        let benches = [
+            make_bench("bench1", "group_a", &[]),
             make_bench("bench2", "group_b", &[]),
-            make_bench("bench3", "group_a", &[])];
-        let refs: Vec<_> = benches.iter().map(|b| unsafe { &*(b as *const _) }).collect();
+            make_bench("bench3", "group_a", &[]),
+        ];
+        let refs: Vec<_> = benches
+            .iter()
+            .map(|b| unsafe { &*(b as *const _) })
+            .collect();
 
         let plan = build_plan(refs, None, Some("group_a"), None, None);
 
@@ -125,10 +141,15 @@ mod tests {
 
     #[test]
     fn test_tag_filter() {
-        let benches = [make_bench("bench1", "default", &["fast"]),
+        let benches = [
+            make_bench("bench1", "default", &["fast"]),
             make_bench("bench2", "default", &["slow"]),
-            make_bench("bench3", "default", &["fast", "important"])];
-        let refs: Vec<_> = benches.iter().map(|b| unsafe { &*(b as *const _) }).collect();
+            make_bench("bench3", "default", &["fast", "important"]),
+        ];
+        let refs: Vec<_> = benches
+            .iter()
+            .map(|b| unsafe { &*(b as *const _) })
+            .collect();
 
         let plan = build_plan(refs, None, None, Some("fast"), None);
 
@@ -138,10 +159,15 @@ mod tests {
 
     #[test]
     fn test_skip_tag() {
-        let benches = [make_bench("bench1", "default", &["fast"]),
+        let benches = [
+            make_bench("bench1", "default", &["fast"]),
             make_bench("bench2", "default", &["slow"]),
-            make_bench("bench3", "default", &["fast", "skip_ci"])];
-        let refs: Vec<_> = benches.iter().map(|b| unsafe { &*(b as *const _) }).collect();
+            make_bench("bench3", "default", &["fast", "skip_ci"]),
+        ];
+        let refs: Vec<_> = benches
+            .iter()
+            .map(|b| unsafe { &*(b as *const _) })
+            .collect();
 
         let plan = build_plan(refs, None, None, None, Some("skip_ci"));
 

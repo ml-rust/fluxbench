@@ -26,8 +26,8 @@ mod supervisor;
 
 pub use config::*;
 pub use executor::{
-    build_report, compute_statistics, execute_verifications, format_human_output, ExecutionConfig,
-    Executor, IsolatedExecutor,
+    ExecutionConfig, Executor, IsolatedExecutor, build_report, compute_statistics,
+    execute_verifications, format_human_output,
 };
 pub use supervisor::*;
 
@@ -35,8 +35,8 @@ use clap::{Parser, Subcommand};
 use fluxbench_core::{BenchmarkDef, WorkerMain};
 use fluxbench_logic::aggregate_verifications;
 use fluxbench_report::{
-    generate_csv_report, generate_github_summary, generate_html_report, generate_json_report,
-    OutputFormat,
+    OutputFormat, generate_csv_report, generate_github_summary, generate_html_report,
+    generate_json_report,
 };
 use rayon::ThreadPoolBuilder;
 use regex::Regex;
@@ -179,6 +179,9 @@ pub fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
             .init();
     }
 
+    // Discover flux.toml configuration (CLI flags override)
+    let config = FluxConfig::discover().unwrap_or_default();
+
     // Parse output format
     let format: OutputFormat = cli.format.parse().unwrap_or(OutputFormat::Human);
 
@@ -186,18 +189,18 @@ pub fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::List) => {
             list_benchmarks(&cli)?;
         }
-        Some(Commands::Run { jobs: _ }) => {
-            run_benchmarks(&cli, format)?;
+        Some(Commands::Run { jobs }) => {
+            run_benchmarks(&cli, &config, format, jobs)?;
         }
         Some(Commands::Compare { ref git_ref }) => {
-            compare_benchmarks(&cli, git_ref, format)?;
+            compare_benchmarks(&cli, &config, git_ref, format)?;
         }
         None => {
             // Default: run benchmarks
             if cli.dry_run {
                 list_benchmarks(&cli)?;
             } else {
-                run_benchmarks(&cli, format)?;
+                run_benchmarks(&cli, &config, format, 1)?;
             }
         }
     }
@@ -208,7 +211,9 @@ pub fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
 /// Run as a worker process (IPC mode)
 fn run_worker_mode() -> anyhow::Result<()> {
     let mut worker = WorkerMain::new();
-    worker.run().map_err(|e| anyhow::anyhow!("Worker error: {}", e))
+    worker
+        .run()
+        .map_err(|e| anyhow::anyhow!("Worker error: {}", e))
 }
 
 /// Filter benchmarks based on CLI options
@@ -272,7 +277,10 @@ fn list_benchmarks(cli: &Cli) -> anyhow::Result<()> {
             } else {
                 format!(" [{}]", bench.tags.join(", "))
             };
-            println!("│   ├── {}{} ({}:{})", bench.id, tags, bench.file, bench.line);
+            println!(
+                "│   ├── {}{} ({}:{})",
+                bench.id, tags, bench.file, bench.line
+            );
             total += 1;
         }
     }
@@ -282,15 +290,57 @@ fn list_benchmarks(cli: &Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_benchmarks(cli: &Cli, format: OutputFormat) -> anyhow::Result<()> {
+/// Build an ExecutionConfig by layering: flux.toml defaults → CLI overrides.
+fn build_execution_config(cli: &Cli, config: &FluxConfig) -> ExecutionConfig {
+    // Start from flux.toml values (parsed durations fall back to defaults on error)
+    let warmup_ns = FluxConfig::parse_duration(&config.runner.warmup_time).unwrap_or(3_000_000_000);
+    let measurement_ns =
+        FluxConfig::parse_duration(&config.runner.measurement_time).unwrap_or(5_000_000_000);
+
+    // CLI flags override config file values.
+    // clap defaults are warmup=3, measurement=5, so we check if the user explicitly
+    // passed different values by comparing against clap defaults. If the CLI value
+    // differs from clap's default, the user explicitly set it and it wins.
+    let warmup_time_ns = if cli.warmup != 3 {
+        cli.warmup * 1_000_000_000
+    } else {
+        warmup_ns
+    };
+    let measurement_time_ns = if cli.measurement != 5 {
+        cli.measurement * 1_000_000_000
+    } else {
+        measurement_ns
+    };
+
+    // min/max iterations: CLI wins if set, else config, else default
+    let min_iterations = cli.min_iterations.or(config.runner.min_iterations);
+    let max_iterations = cli.max_iterations.or(config.runner.max_iterations);
+
+    ExecutionConfig {
+        warmup_time_ns,
+        measurement_time_ns,
+        min_iterations,
+        max_iterations,
+        track_allocations: config.allocator.track,
+        bootstrap_iterations: config.runner.bootstrap_iterations,
+        confidence_level: config.runner.confidence_level,
+    }
+}
+
+fn run_benchmarks(
+    cli: &Cli,
+    config: &FluxConfig,
+    format: OutputFormat,
+    jobs: usize,
+) -> anyhow::Result<()> {
+    let jobs = jobs.max(1);
+
     // Configure Rayon thread pool for statistics computation
-    // threads=0 means use all available cores (Rayon default)
-    // threads=1 means single-threaded (deterministic results)
     if cli.threads > 0 {
         ThreadPoolBuilder::new()
             .num_threads(cli.threads)
             .build_global()
-            .ok(); // Ignore error if already initialized
+            .ok();
     }
 
     // Discover benchmarks
@@ -308,35 +358,40 @@ fn run_benchmarks(cli: &Cli, format: OutputFormat) -> anyhow::Result<()> {
         cli.threads.to_string()
     };
     let mode_str = if cli.isolated {
-        if cli.one_shot { " (isolated, one-shot)" } else { " (isolated)" }
+        if cli.one_shot {
+            " (isolated, one-shot)"
+        } else {
+            " (isolated, persistent)"
+        }
     } else {
         " (in-process)"
     };
-    println!("Running {} benchmarks{}, {} threads...\n", benchmarks.len(), mode_str, threads_str);
+    println!(
+        "Running {} benchmarks{}, {} threads, {} worker(s)...\n",
+        benchmarks.len(),
+        mode_str,
+        threads_str,
+        jobs
+    );
 
     let start_time = Instant::now();
 
-    // Build execution config
-    let exec_config = ExecutionConfig {
-        warmup_time_ns: cli.warmup * 1_000_000_000,
-        measurement_time_ns: cli.measurement * 1_000_000_000,
-        min_iterations: cli.min_iterations,
-        max_iterations: cli.max_iterations,
-        track_allocations: true,
-        bootstrap_iterations: 100_000, // Matches Criterion default
-        confidence_level: 0.95,
-    };
+    // Build execution config from flux.toml + CLI overrides
+    let exec_config = build_execution_config(cli, config);
 
     // Execute benchmarks (isolated by default per TDD)
     let results = if cli.isolated {
         let timeout = std::time::Duration::from_secs(cli.worker_timeout);
-        // one_shot=true means fresh process per benchmark (no reuse)
-        // one_shot=false (default) means Persistent mode (reuse workers)
         let reuse_workers = !cli.one_shot;
-        let isolated_executor = IsolatedExecutor::new(exec_config.clone(), timeout, reuse_workers);
+        let isolated_executor =
+            IsolatedExecutor::new(exec_config.clone(), timeout, reuse_workers, jobs);
         isolated_executor.execute(&benchmarks)
     } else {
-        // In-process execution (--isolated=false)
+        if jobs > 1 {
+            eprintln!(
+                "Warning: --jobs currently applies only to isolated mode; running in-process serially."
+            );
+        }
         let mut executor = Executor::new(exec_config.clone());
         executor.execute(&benchmarks)
     };
@@ -349,7 +404,8 @@ fn run_benchmarks(cli: &Cli, format: OutputFormat) -> anyhow::Result<()> {
     let mut report = build_report(&results, &stats, &exec_config, total_duration_ms);
 
     // Run comparisons, synthetics, and verifications
-    let (comparison_results, comparison_series, synthetic_results, verification_results) = execute_verifications(&results, &stats);
+    let (comparison_results, comparison_series, synthetic_results, verification_results) =
+        execute_verifications(&results, &stats);
     let verification_summary = aggregate_verifications(&verification_results);
     report.comparisons = comparison_results;
     report.comparison_series = comparison_series;
@@ -379,28 +435,71 @@ fn run_benchmarks(cli: &Cli, format: OutputFormat) -> anyhow::Result<()> {
     }
 
     // Exit with appropriate code
-    if verification_summary.should_fail_ci() {
+    let has_crashes = report
+        .results
+        .iter()
+        .any(|r| matches!(r.status, fluxbench_report::BenchmarkStatus::Crashed));
+
+    if verification_summary.should_fail_ci() || has_crashes {
+        if has_crashes {
+            eprintln!("\nBenchmark(s) crashed during execution");
+        }
+        if verification_summary.should_fail_ci() {
+            eprintln!(
+                "\n{} critical verification failure(s)",
+                verification_summary.critical_failures + verification_summary.critical_errors
+            );
+        }
         std::process::exit(1);
     }
 
     Ok(())
 }
 
-fn compare_benchmarks(cli: &Cli, git_ref: &str, format: OutputFormat) -> anyhow::Result<()> {
+fn compare_benchmarks(
+    cli: &Cli,
+    config: &FluxConfig,
+    git_ref: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
     // Load baseline
     let baseline_path = cli.baseline.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("--baseline required for comparison, or use 'compare' command with a git ref")
+        anyhow::anyhow!(
+            "--baseline required for comparison, or use 'compare' command with a git ref"
+        )
     })?;
 
     if !baseline_path.exists() {
-        return Err(anyhow::anyhow!("Baseline file not found: {}", baseline_path.display()));
+        return Err(anyhow::anyhow!(
+            "Baseline file not found: {}",
+            baseline_path.display()
+        ));
     }
 
     let baseline_json = std::fs::read_to_string(baseline_path)?;
     let baseline: fluxbench_report::Report = serde_json::from_str(&baseline_json)?;
+    let resolved_git_ref = resolve_git_ref(git_ref)?;
+
+    if let Some(baseline_commit) = baseline.meta.git_commit.as_deref() {
+        let matches_ref = baseline_commit == resolved_git_ref
+            || baseline_commit.starts_with(&resolved_git_ref)
+            || resolved_git_ref.starts_with(baseline_commit);
+        if !matches_ref {
+            return Err(anyhow::anyhow!(
+                "Baseline commit {} does not match git ref {} ({})",
+                baseline_commit,
+                git_ref,
+                resolved_git_ref
+            ));
+        }
+    } else {
+        eprintln!(
+            "Warning: baseline report has no commit metadata; git ref consistency cannot be verified."
+        );
+    }
 
     println!("Comparing against baseline: {}", baseline_path.display());
-    println!("Git ref: {}\n", git_ref);
+    println!("Git ref: {} ({})\n", git_ref, resolved_git_ref);
 
     // Run current benchmarks
     let all_benchmarks: Vec<_> = inventory::iter::<BenchmarkDef>.into_iter().collect();
@@ -413,13 +512,7 @@ fn compare_benchmarks(cli: &Cli, git_ref: &str, format: OutputFormat) -> anyhow:
 
     let start_time = Instant::now();
 
-    let exec_config = ExecutionConfig {
-        warmup_time_ns: cli.warmup * 1_000_000_000,
-        measurement_time_ns: cli.measurement * 1_000_000_000,
-        min_iterations: cli.min_iterations,
-        max_iterations: cli.max_iterations,
-        ..Default::default()
-    };
+    let exec_config = build_execution_config(cli, config);
 
     let mut executor = Executor::new(exec_config.clone());
     let results = executor.execute(&benchmarks);
@@ -429,16 +522,18 @@ fn compare_benchmarks(cli: &Cli, git_ref: &str, format: OutputFormat) -> anyhow:
     let mut report = build_report(&results, &stats, &exec_config, total_duration_ms);
 
     // Add comparison data
+    let regression_threshold = cli.threshold.unwrap_or(config.ci.regression_threshold);
     let baseline_map: std::collections::HashMap<_, _> = baseline
         .results
         .iter()
-        .filter_map(|r| r.metrics.as_ref().map(|m| (r.id.clone(), m.mean_ns)))
+        .filter_map(|r| r.metrics.as_ref().map(|m| (r.id.clone(), m.clone())))
         .collect();
 
     for result in &mut report.results {
-        if let (Some(metrics), Some(&baseline_mean)) =
+        if let (Some(metrics), Some(baseline_metrics)) =
             (&result.metrics, baseline_map.get(&result.id))
         {
+            let baseline_mean = baseline_metrics.mean_ns;
             let absolute_change = metrics.mean_ns - baseline_mean;
             let relative_change = if baseline_mean > 0.0 {
                 (absolute_change / baseline_mean) * 100.0
@@ -446,34 +541,56 @@ fn compare_benchmarks(cli: &Cli, git_ref: &str, format: OutputFormat) -> anyhow:
                 0.0
             };
 
-            // Determine if significant (>5% change and outside CI)
-            let is_significant = relative_change.abs() > 5.0
-                && (metrics.mean_ns < metrics.ci_lower_ns || metrics.mean_ns > metrics.ci_upper_ns);
+            // Determine significance via CI non-overlap and threshold crossing.
+            let ci_non_overlap = metrics.ci_upper_ns < baseline_metrics.ci_lower_ns
+                || metrics.ci_lower_ns > baseline_metrics.ci_upper_ns;
+            let is_significant = relative_change.abs() > regression_threshold && ci_non_overlap;
 
             // Track regressions/improvements
-            if relative_change > cli.threshold.unwrap_or(5.0) {
+            if relative_change > regression_threshold {
                 report.summary.regressions += 1;
-            } else if relative_change < -cli.threshold.unwrap_or(5.0) {
+            } else if relative_change < -regression_threshold {
                 report.summary.improvements += 1;
             }
+
+            let mut effect_size = if metrics.std_dev_ns > f64::EPSILON {
+                absolute_change / metrics.std_dev_ns
+            } else {
+                0.0
+            };
+            if !effect_size.is_finite() {
+                effect_size = 0.0;
+            }
+
+            let probability_regression = if ci_non_overlap {
+                if relative_change > 0.0 { 0.99 } else { 0.01 }
+            } else if relative_change > 0.0 {
+                0.60
+            } else {
+                0.40
+            };
 
             result.comparison = Some(fluxbench_report::Comparison {
                 baseline_mean_ns: baseline_mean,
                 absolute_change_ns: absolute_change,
                 relative_change,
-                probability_regression: if relative_change > 0.0 { 0.9 } else { 0.1 },
+                probability_regression,
                 is_significant,
-                effect_size: absolute_change / metrics.std_dev_ns,
+                effect_size,
             });
         }
     }
 
     // Run comparisons, synthetics, and verifications
-    let (comparison_results, comparison_series, synthetic_results, verification_results) = execute_verifications(&results, &stats);
+    let (comparison_results, comparison_series, synthetic_results, verification_results) =
+        execute_verifications(&results, &stats);
+    let verification_summary = aggregate_verifications(&verification_results);
     report.comparisons = comparison_results;
     report.comparison_series = comparison_series;
     report.synthetics = synthetic_results;
     report.verifications = verification_results;
+    report.summary.critical_failures = verification_summary.critical_failures;
+    report.summary.warnings = verification_summary.failed - verification_summary.critical_failures;
 
     // Generate output
     let output = match format {
@@ -492,17 +609,51 @@ fn compare_benchmarks(cli: &Cli, git_ref: &str, format: OutputFormat) -> anyhow:
         print!("{}", output);
     }
 
-    // Exit with error if regressions exceed threshold
-    if report.summary.regressions > 0 {
-        eprintln!(
-            "\n{} regression(s) detected above {}% threshold",
-            report.summary.regressions,
-            cli.threshold.unwrap_or(5.0)
-        );
+    // Exit with error if regressions exceed threshold or verifications fail
+    let should_fail = report.summary.regressions > 0 || verification_summary.should_fail_ci();
+    if should_fail {
+        if report.summary.regressions > 0 {
+            eprintln!(
+                "\n{} regression(s) detected above {}% threshold",
+                report.summary.regressions, regression_threshold
+            );
+        }
+        if verification_summary.should_fail_ci() {
+            eprintln!(
+                "\n{} critical verification failure(s)",
+                verification_summary.critical_failures + verification_summary.critical_errors
+            );
+        }
         std::process::exit(1);
     }
 
     Ok(())
+}
+
+fn resolve_git_ref(git_ref: &str) -> anyhow::Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", git_ref])
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to resolve git ref '{}': {}", git_ref, e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!(
+            "Invalid git ref '{}': {}",
+            git_ref,
+            stderr.trim()
+        ));
+    }
+
+    let resolved = String::from_utf8(output.stdout)?.trim().to_string();
+    if resolved.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Git ref '{}' resolved to an empty commit hash",
+            git_ref
+        ));
+    }
+
+    Ok(resolved)
 }
 
 /// Format comparison output for human display
@@ -568,9 +719,7 @@ fn format_comparison_output(
         "  Regressions: {}  Improvements: {}  No Change: {}\n",
         report.summary.regressions,
         report.summary.improvements,
-        report.summary.total_benchmarks
-            - report.summary.regressions
-            - report.summary.improvements
+        report.summary.total_benchmarks - report.summary.regressions - report.summary.improvements
     ));
 
     output

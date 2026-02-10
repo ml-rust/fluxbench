@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// FluxBench configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FluxConfig {
     /// Runner configuration
     #[serde(default)]
@@ -217,7 +216,6 @@ fn default_threshold() -> f64 {
 fn default_fail_on_critical() -> bool {
     true
 }
-
 
 impl FluxConfig {
     /// Load configuration from a TOML file
