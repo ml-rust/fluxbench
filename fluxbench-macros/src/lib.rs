@@ -97,6 +97,16 @@ mod attr {
         let _: syn::LitInt = meta.value()?.parse()?;
         Ok(())
     }
+
+    /// Parse a bracketed array of expressions: `args = [10, 100, 1000]`
+    pub fn expr_array(meta: &ParseNestedMeta) -> syn::Result<Vec<syn::Expr>> {
+        meta.value()?;
+        let content;
+        syn::bracketed!(content in meta.input);
+        let items: syn::punctuated::Punctuated<syn::Expr, syn::Token![,]> =
+            syn::punctuated::Punctuated::parse_terminated(&content)?;
+        Ok(items.into_iter().collect())
+    }
 }
 
 /// Register a benchmark function
@@ -134,30 +144,22 @@ pub fn bench(args: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Error> {
-    // Validate signature
-    validate_signature(&func)?;
-
-    // Parse configuration
+    // Parse configuration first (need to know if args is set before validating signature)
     let config = parse_bench_config(args)?;
+
+    // Validate signature
+    validate_signature(&func, !config.args.is_empty())?;
 
     // Generate identifiers
     let fn_name = &func.sig.ident;
     let fn_name_str = fn_name.to_string();
-    let wrapper_name = format_ident!("_flux_wrapper_{}", fn_name);
 
-    // Handle async functions
-    let is_async = func.sig.asyncness.is_some();
-    let runner_block = if is_async {
-        generate_async_runner(&config, fn_name)
-    } else {
-        quote! {
-            #fn_name(bencher);
-        }
-    };
-
-    // Config values
-    let id = config.id.unwrap_or_else(|| fn_name_str.clone());
-    let group = config.group.unwrap_or_else(|| "default".to_string());
+    // Shared config values
+    let base_id = config.id.clone().unwrap_or_else(|| fn_name_str.clone());
+    let group = config
+        .group
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
     let severity = match config.severity.as_deref() {
         Some("critical") => quote! { ::fluxbench::Severity::Critical },
         Some("warning") => quote! { ::fluxbench::Severity::Warning },
@@ -191,6 +193,82 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
         .map(|v| quote! { Some(#v) })
         .unwrap_or(quote! { None });
 
+    // ── Parameterized path: generate one BenchmarkDef per arg value ──────
+    if !config.args.is_empty() {
+        let is_async = func.sig.asyncness.is_some();
+
+        let mut registrations = Vec::new();
+        for (i, arg_expr) in config.args.iter().enumerate() {
+            let arg_label = expr_to_label(arg_expr);
+            let bench_id = format!("{}/{}", base_id, arg_label);
+            let wrapper_name = format_ident!("_flux_wrapper_{}_{}", fn_name, i);
+
+            let runner_block = if is_async {
+                let async_config = &config.async_runtime;
+                let (runtime_builder, runtime_config) = async_runtime_tokens(async_config);
+                quote! {
+                    let rt = ::fluxbench::internal::tokio::runtime::Builder::#runtime_builder
+                        #runtime_config
+                        .build()
+                        .expect("FluxBench: Failed to create async runtime");
+                    rt.block_on(async {
+                        #fn_name(bencher, #arg_expr).await;
+                    });
+                }
+            } else {
+                quote! {
+                    #fn_name(bencher, #arg_expr);
+                }
+            };
+
+            registrations.push(quote! {
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                fn #wrapper_name(bencher: &mut ::fluxbench::Bencher) {
+                    #runner_block
+                }
+
+                ::fluxbench::internal::inventory::submit! {
+                    ::fluxbench::BenchmarkDef {
+                        id: #bench_id,
+                        name: #fn_name_str,
+                        group: #group,
+                        severity: #severity,
+                        threshold: #threshold,
+                        budget_ns: #budget_ns,
+                        tags: &[#(#tags),*],
+                        runner_fn: #wrapper_name,
+                        file: file!(),
+                        line: line!(),
+                        module_path: module_path!(),
+                        warmup_ns: #warmup_ns_expr,
+                        measurement_ns: #measurement_ns_expr,
+                        samples: #samples_expr,
+                        min_iterations: #min_iterations_expr,
+                        max_iterations: #max_iterations_expr,
+                    }
+                }
+            });
+        }
+
+        return Ok(quote! {
+            #func
+            #(#registrations)*
+        });
+    }
+
+    // ── Normal (non-parameterized) path ──────────────────────────────────
+    let wrapper_name = format_ident!("_flux_wrapper_{}", fn_name);
+
+    let is_async = func.sig.asyncness.is_some();
+    let runner_block = if is_async {
+        generate_async_runner(&config, fn_name)
+    } else {
+        quote! {
+            #fn_name(bencher);
+        }
+    };
+
     Ok(quote! {
         #func
 
@@ -202,7 +280,7 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
 
         ::fluxbench::internal::inventory::submit! {
             ::fluxbench::BenchmarkDef {
-                id: #id,
+                id: #base_id,
                 name: #fn_name_str,
                 group: #group,
                 severity: #severity,
@@ -224,44 +302,7 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
 }
 
 fn generate_async_runner(config: &BenchConfig, fn_name: &syn::Ident) -> TokenStream2 {
-    let (runtime_builder, runtime_config) = match &config.async_runtime {
-        AsyncRuntimeConfig::CurrentThread {
-            enable_time,
-            enable_io,
-        } => {
-            let time = if *enable_time {
-                quote! { .enable_time() }
-            } else {
-                quote! {}
-            };
-            let io = if *enable_io {
-                quote! { .enable_io() }
-            } else {
-                quote! {}
-            };
-            (quote! { new_current_thread() }, quote! { #time #io })
-        }
-        AsyncRuntimeConfig::MultiThread {
-            worker_threads,
-            enable_time,
-            enable_io,
-        } => {
-            let workers = worker_threads
-                .map(|n| quote! { .worker_threads(#n) })
-                .unwrap_or(quote! {});
-            let time = if *enable_time {
-                quote! { .enable_time() }
-            } else {
-                quote! {}
-            };
-            let io = if *enable_io {
-                quote! { .enable_io() }
-            } else {
-                quote! {}
-            };
-            (quote! { new_multi_thread() }, quote! { #workers #time #io })
-        }
-    };
+    let (runtime_builder, runtime_config) = async_runtime_tokens(&config.async_runtime);
 
     quote! {
         let rt = ::fluxbench::internal::tokio::runtime::Builder::#runtime_builder
@@ -311,6 +352,8 @@ struct BenchConfig {
     samples: Option<u64>,
     min_iterations: Option<u64>,
     max_iterations: Option<u64>,
+    /// Parameterized benchmark args: `args = [10, 100, 1000]`
+    args: Vec<syn::Expr>,
 }
 
 fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
@@ -343,6 +386,7 @@ fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
             "samples" => config.samples = attr::int(&meta)?,
             "min_iterations" => config.min_iterations = attr::int(&meta)?,
             "max_iterations" => config.max_iterations = attr::int(&meta)?,
+            "args" => config.args = attr::expr_array(&meta)?,
             _ => return Err(attr::unknown(&meta, &name)),
         }
         Ok(())
@@ -365,14 +409,79 @@ fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
     Ok(config)
 }
 
-fn validate_signature(func: &ItemFn) -> syn::Result<()> {
-    if func.sig.inputs.len() != 1 {
-        return Err(syn::Error::new_spanned(
-            &func.sig,
-            "FluxBench: Function must take exactly one argument: `&mut Bencher`",
-        ));
+fn validate_signature(func: &ItemFn, has_args: bool) -> syn::Result<()> {
+    let expected = if has_args { 2 } else { 1 };
+    if func.sig.inputs.len() != expected {
+        let msg = if has_args {
+            "FluxBench: Parameterized benchmark must take two arguments: `&mut Bencher` and the parameter"
+        } else {
+            "FluxBench: Function must take exactly one argument: `&mut Bencher`"
+        };
+        return Err(syn::Error::new_spanned(&func.sig, msg));
     }
     Ok(())
+}
+
+/// Convert an expression to a safe, human-readable label for benchmark IDs.
+///
+/// Collapses whitespace and escapes path-unsafe characters so IDs are valid
+/// in file paths, URLs, and don't conflict with the `base_id/label` separator.
+///
+/// Examples: `10` → `"10"`, `1000` → `"1000"`, `vec![1, 2]` → `"vec![1,2]"`
+fn expr_to_label(expr: &syn::Expr) -> String {
+    let s = quote!(#expr).to_string();
+    // Collapse all whitespace
+    let collapsed: String = s.split_whitespace().collect::<Vec<_>>().join("");
+    // Escape characters that are unsafe in IDs, paths, or URLs
+    collapsed
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|' => '_',
+            c => c,
+        })
+        .collect()
+}
+
+/// Extract async runtime builder tokens from config (shared between normal and parameterized paths)
+fn async_runtime_tokens(config: &AsyncRuntimeConfig) -> (TokenStream2, TokenStream2) {
+    match config {
+        AsyncRuntimeConfig::CurrentThread {
+            enable_time,
+            enable_io,
+        } => {
+            let time = if *enable_time {
+                quote! { .enable_time() }
+            } else {
+                quote! {}
+            };
+            let io = if *enable_io {
+                quote! { .enable_io() }
+            } else {
+                quote! {}
+            };
+            (quote! { new_current_thread() }, quote! { #time #io })
+        }
+        AsyncRuntimeConfig::MultiThread {
+            worker_threads,
+            enable_time,
+            enable_io,
+        } => {
+            let workers = worker_threads
+                .map(|n| quote! { .worker_threads(#n) })
+                .unwrap_or(quote! {});
+            let time = if *enable_time {
+                quote! { .enable_time() }
+            } else {
+                quote! {}
+            };
+            let io = if *enable_io {
+                quote! { .enable_io() }
+            } else {
+                quote! {}
+            };
+            (quote! { new_multi_thread() }, quote! { #workers #time #io })
+        }
+    }
 }
 
 fn parse_duration(s: &str) -> Option<u64> {
