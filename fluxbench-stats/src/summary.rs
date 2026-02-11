@@ -26,6 +26,10 @@ pub struct SummaryStatistics {
     pub p99: f64,
     pub p999: f64,
 
+    // Distribution shape (computed from CLEANED data)
+    pub skewness: f64,
+    pub kurtosis: f64,
+
     // Sample info
     pub sample_count: usize,
     pub outlier_count: usize,
@@ -63,6 +67,8 @@ pub fn compute_summary(samples: &[f64], outlier_method: OutlierMethod) -> Summar
             p95: 0.0,
             p99: 0.0,
             p999: 0.0,
+            skewness: 0.0,
+            kurtosis: 0.0,
             sample_count: 0,
             outlier_count: 0,
             outlier_analysis: detect_outliers(samples, outlier_method),
@@ -114,6 +120,22 @@ pub fn compute_summary(samples: &[f64], outlier_method: OutlierMethod) -> Summar
     let p99 = compute_percentile(all, 99.0);
     let p999 = compute_percentile(all, 99.9);
 
+    // Skewness and kurtosis from CLEANED data (Fisher's definitions)
+    let (skewness, kurtosis) = if cleaned.len() < 3 || std_dev < f64::EPSILON {
+        (0.0, 0.0)
+    } else {
+        let n = cleaned.len() as f64;
+        let mut m3 = 0.0;
+        let mut m4 = 0.0;
+        for &x in cleaned.iter() {
+            let d = (x - mean) / std_dev;
+            let d2 = d * d;
+            m3 += d2 * d;
+            m4 += d2 * d2;
+        }
+        (m3 / n, m4 / n - 3.0)
+    };
+
     SummaryStatistics {
         mean,
         median,
@@ -125,6 +147,8 @@ pub fn compute_summary(samples: &[f64], outlier_method: OutlierMethod) -> Summar
         p95,
         p99,
         p999,
+        skewness,
+        kurtosis,
         sample_count: all.len(),
         outlier_count: analysis.outlier_indices.len(),
         outlier_analysis: analysis,
@@ -151,6 +175,29 @@ impl SummaryStatistics {
     /// Check if distribution appears stable (low CV)
     pub fn is_stable(&self, cv_threshold: f64) -> bool {
         self.coefficient_of_variation() < cv_threshold
+    }
+
+    /// Classify the distribution shape based on skewness and kurtosis.
+    ///
+    /// Returns a string like "symmetric, normal-tailed" or "right-skewed, heavy-tailed".
+    pub fn distribution_shape(&self) -> String {
+        let skew_label = if self.skewness.abs() < 0.5 {
+            "symmetric"
+        } else if self.skewness > 0.0 {
+            "right-skewed"
+        } else {
+            "left-skewed"
+        };
+
+        let kurt_label = if self.kurtosis.abs() < 1.0 {
+            "normal-tailed"
+        } else if self.kurtosis > 0.0 {
+            "heavy-tailed"
+        } else {
+            "light-tailed"
+        };
+
+        format!("{}, {}", skew_label, kurt_label)
     }
 }
 
@@ -267,6 +314,65 @@ mod tests {
 
         assert_eq!(summary.sample_count, 0);
         assert!((summary.mean - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_skewness_symmetric() {
+        // Symmetric data should have skewness ≈ 0
+        let samples: Vec<f64> = (1..=100).map(|x| x as f64).collect();
+        let summary = compute_summary(&samples, OutlierMethod::None);
+        assert!(
+            summary.skewness.abs() < 0.1,
+            "skewness={}",
+            summary.skewness
+        );
+        // Uniform distribution has excess kurtosis ≈ -1.2 (light-tailed)
+        assert!(summary.kurtosis < 0.0, "kurtosis={}", summary.kurtosis);
+        assert!(summary.distribution_shape().contains("symmetric"));
+    }
+
+    #[test]
+    fn test_skewness_right_skewed() {
+        // Right-skewed data (exponential-like)
+        let samples: Vec<f64> = (0..200).map(|x| (x as f64 * 0.05).exp()).collect();
+        let summary = compute_summary(&samples, OutlierMethod::None);
+        assert!(summary.skewness > 0.5, "skewness={}", summary.skewness);
+        assert!(summary.distribution_shape().contains("right-skewed"));
+    }
+
+    #[test]
+    fn test_skewness_left_skewed() {
+        // Left-skewed data (mirror of exponential)
+        let samples: Vec<f64> = (0..200).map(|x| 200.0 - (x as f64 * 0.05).exp()).collect();
+        let summary = compute_summary(&samples, OutlierMethod::None);
+        assert!(summary.skewness < -0.5, "skewness={}", summary.skewness);
+        assert!(summary.distribution_shape().contains("left-skewed"));
+    }
+
+    #[test]
+    fn test_skewness_constant_values() {
+        let samples = vec![5.0, 5.0, 5.0, 5.0, 5.0];
+        let summary = compute_summary(&samples, OutlierMethod::None);
+        assert_eq!(summary.skewness, 0.0);
+        assert_eq!(summary.kurtosis, 0.0);
+    }
+
+    #[test]
+    fn test_skewness_two_samples() {
+        let samples = vec![1.0, 2.0];
+        let summary = compute_summary(&samples, OutlierMethod::None);
+        // < 3 samples: returns (0.0, 0.0)
+        assert_eq!(summary.skewness, 0.0);
+        assert_eq!(summary.kurtosis, 0.0);
+    }
+
+    #[test]
+    fn test_kurtosis_normal() {
+        // Uniform distribution has negative excess kurtosis (light-tailed)
+        let samples: Vec<f64> = (0..1000).map(|x| x as f64).collect();
+        let summary = compute_summary(&samples, OutlierMethod::None);
+        // Uniform: kurtosis = -1.2
+        assert!(summary.kurtosis < 0.0, "kurtosis={}", summary.kurtosis);
     }
 
     #[test]

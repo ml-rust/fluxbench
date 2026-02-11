@@ -70,6 +70,19 @@ pub struct ReportMeta {
     pub git_commit: Option<String>,
     pub git_branch: Option<String>,
     pub system: SystemInfo,
+    pub config: ReportConfig,
+}
+
+/// Execution configuration captured in report metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportConfig {
+    pub warmup_time_ns: u64,
+    pub measurement_time_ns: u64,
+    pub min_iterations: Option<u64>,
+    pub max_iterations: Option<u64>,
+    pub bootstrap_iterations: usize,
+    pub confidence_level: f64,
+    pub track_allocations: bool,
 }
 
 /// System information
@@ -89,6 +102,7 @@ pub struct BenchmarkReportResult {
     pub name: String,
     pub group: String,
     pub status: BenchmarkStatus,
+    pub severity: fluxbench_core::Severity,
     pub file: String,
     pub line: u32,
     pub metrics: Option<BenchmarkMetrics>,
@@ -120,6 +134,8 @@ pub struct BenchmarkMetrics {
     pub p95_ns: f64,
     pub p99_ns: f64,
     pub p999_ns: f64,
+    pub skewness: f64,
+    pub kurtosis: f64,
     pub ci_lower_ns: f64,
     pub ci_upper_ns: f64,
     pub ci_level: f64,
@@ -148,6 +164,8 @@ impl From<&SummaryStatistics> for BenchmarkMetrics {
             p95_ns: stats.p95,
             p99_ns: stats.p99,
             p999_ns: stats.p999,
+            skewness: stats.skewness,
+            kurtosis: stats.kurtosis,
             ci_lower_ns: 0.0, // Filled by bootstrap
             ci_upper_ns: 0.0,
             ci_level: 0.95,
