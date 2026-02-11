@@ -41,6 +41,16 @@ pub struct BenchmarkDef {
     pub line: u32,
     /// Module path
     pub module_path: &'static str,
+    /// Per-benchmark warmup override (nanoseconds)
+    pub warmup_ns: Option<u64>,
+    /// Per-benchmark measurement override (nanoseconds)
+    pub measurement_ns: Option<u64>,
+    /// Per-benchmark fixed sample count
+    pub samples: Option<u64>,
+    /// Per-benchmark minimum iterations
+    pub min_iterations: Option<u64>,
+    /// Per-benchmark maximum iterations
+    pub max_iterations: Option<u64>,
 }
 
 /// Severity levels for CI integration

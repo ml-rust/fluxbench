@@ -601,10 +601,22 @@ impl Supervisor {
         }
     }
 
-    /// Run all benchmarks with process isolation
+    /// Run all benchmarks with process isolation using the default config.
+    ///
+    /// For per-benchmark configuration, use [`run_all_configs`](Self::run_all_configs).
     pub fn run_all(
         &self,
         benchmarks: &[&BenchmarkDef],
+    ) -> Result<Vec<IpcBenchmarkResult>, SupervisorError> {
+        let configs: Vec<_> = benchmarks.iter().map(|_| self.config.clone()).collect();
+        self.run_all_configs(benchmarks, &configs)
+    }
+
+    /// Run all benchmarks with per-benchmark configs
+    pub fn run_all_configs(
+        &self,
+        benchmarks: &[&BenchmarkDef],
+        configs: &[BenchmarkConfig],
     ) -> Result<Vec<IpcBenchmarkResult>, SupervisorError> {
         if benchmarks.is_empty() {
             return Ok(Vec::new());
@@ -612,8 +624,8 @@ impl Supervisor {
 
         if self.num_workers == 1 || benchmarks.len() == 1 {
             let mut results = Vec::with_capacity(benchmarks.len());
-            for bench in benchmarks {
-                results.push(self.run_isolated(bench)?);
+            for (bench, cfg) in benchmarks.iter().zip(configs.iter()) {
+                results.push(self.run_isolated(bench, cfg)?);
             }
             return Ok(results);
         }
@@ -626,10 +638,11 @@ impl Supervisor {
                 SupervisorError::IpcError(format!("Failed to build worker pool: {}", e))
             })?;
 
+        let pairs: Vec<_> = benchmarks.iter().zip(configs.iter()).collect();
         let outcomes: Vec<Result<IpcBenchmarkResult, SupervisorError>> = pool.install(|| {
-            benchmarks
+            pairs
                 .par_iter()
-                .map(|bench| self.run_isolated(bench))
+                .map(|(bench, cfg)| self.run_isolated(bench, cfg))
                 .collect()
         });
 
@@ -641,9 +654,13 @@ impl Supervisor {
     }
 
     /// Run a single benchmark in an isolated worker process
-    fn run_isolated(&self, bench: &BenchmarkDef) -> Result<IpcBenchmarkResult, SupervisorError> {
+    fn run_isolated(
+        &self,
+        bench: &BenchmarkDef,
+        config: &BenchmarkConfig,
+    ) -> Result<IpcBenchmarkResult, SupervisorError> {
         let mut worker = WorkerHandle::spawn(self.timeout)?;
-        let result = worker.run_benchmark(bench.id, &self.config);
+        let result = worker.run_benchmark(bench.id, config);
         let _ = worker.shutdown();
         result
     }
@@ -660,7 +677,7 @@ impl Supervisor {
 
     fn run_with_reuse_indexed(
         &self,
-        benchmarks: &[(usize, &BenchmarkDef)],
+        benchmarks: &[(usize, &BenchmarkDef, &BenchmarkConfig)],
     ) -> Vec<(usize, IpcBenchmarkResult)> {
         let mut results = Vec::with_capacity(benchmarks.len());
         if benchmarks.is_empty() {
@@ -671,14 +688,14 @@ impl Supervisor {
             Ok(worker) => Some(worker),
             Err(e) => {
                 let message = e.to_string();
-                for &(index, bench) in benchmarks {
+                for &(index, bench, _) in benchmarks {
                     results.push((index, Self::crashed_result(bench, message.clone())));
                 }
                 return results;
             }
         };
 
-        for &(index, bench) in benchmarks {
+        for &(index, bench, cfg) in benchmarks {
             if worker.is_none() {
                 match WorkerHandle::spawn(self.timeout) {
                     Ok(new_worker) => worker = Some(new_worker),
@@ -690,7 +707,7 @@ impl Supervisor {
             }
 
             let run_result = match worker.as_mut() {
-                Some(worker) => worker.run_benchmark(bench.id, &self.config),
+                Some(worker) => worker.run_benchmark(bench.id, cfg),
                 None => unreachable!("worker should exist after spawn check"),
             };
 
@@ -715,26 +732,40 @@ impl Supervisor {
         results
     }
 
-    /// Run benchmarks with worker reuse (less isolation but faster)
+    /// Run benchmarks with worker reuse using the default config.
+    ///
+    /// For per-benchmark configuration, use [`run_with_reuse_configs`](Self::run_with_reuse_configs).
     pub fn run_with_reuse(
         &self,
         benchmarks: &[&BenchmarkDef],
+    ) -> Result<Vec<IpcBenchmarkResult>, SupervisorError> {
+        let configs: Vec<_> = benchmarks.iter().map(|_| self.config.clone()).collect();
+        self.run_with_reuse_configs(benchmarks, &configs)
+    }
+
+    /// Run benchmarks with worker reuse and per-benchmark configs
+    pub fn run_with_reuse_configs(
+        &self,
+        benchmarks: &[&BenchmarkDef],
+        configs: &[BenchmarkConfig],
     ) -> Result<Vec<IpcBenchmarkResult>, SupervisorError> {
         if benchmarks.is_empty() {
             return Ok(Vec::new());
         }
 
-        let indexed_benchmarks: Vec<(usize, &BenchmarkDef)> = benchmarks
+        let indexed_benchmarks: Vec<(usize, &BenchmarkDef, &BenchmarkConfig)> = benchmarks
             .iter()
+            .zip(configs.iter())
             .enumerate()
-            .map(|(index, bench)| (index, *bench))
+            .map(|(index, (bench, cfg))| (index, *bench, cfg))
             .collect();
 
         let mut indexed_results = if self.num_workers == 1 || benchmarks.len() == 1 {
             self.run_with_reuse_indexed(&indexed_benchmarks)
         } else {
             let worker_count = self.num_workers.min(indexed_benchmarks.len());
-            let mut shards: Vec<Vec<(usize, &BenchmarkDef)>> = vec![Vec::new(); worker_count];
+            let mut shards: Vec<Vec<(usize, &BenchmarkDef, &BenchmarkConfig)>> =
+                vec![Vec::new(); worker_count];
             for (position, entry) in indexed_benchmarks.into_iter().enumerate() {
                 shards[position % worker_count].push(entry);
             }

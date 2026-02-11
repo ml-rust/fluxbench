@@ -92,6 +92,11 @@ mod tests {
             file: "",
             line: 0,
             module_path: "",
+            warmup_ns: None,
+            measurement_ns: None,
+            samples: None,
+            min_iterations: None,
+            max_iterations: None,
         }
     }
 

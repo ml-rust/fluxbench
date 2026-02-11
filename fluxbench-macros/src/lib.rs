@@ -170,6 +170,27 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
         .unwrap_or(quote! { None });
     let tags: Vec<_> = config.tags.iter().map(|t| quote! { #t }).collect();
 
+    let warmup_ns_expr = config
+        .warmup_ns
+        .map(|v| quote! { Some(#v) })
+        .unwrap_or(quote! { None });
+    let measurement_ns_expr = config
+        .measurement_ns
+        .map(|v| quote! { Some(#v) })
+        .unwrap_or(quote! { None });
+    let samples_expr = config
+        .samples
+        .map(|v| quote! { Some(#v) })
+        .unwrap_or(quote! { None });
+    let min_iterations_expr = config
+        .min_iterations
+        .map(|v| quote! { Some(#v) })
+        .unwrap_or(quote! { None });
+    let max_iterations_expr = config
+        .max_iterations
+        .map(|v| quote! { Some(#v) })
+        .unwrap_or(quote! { None });
+
     Ok(quote! {
         #func
 
@@ -192,6 +213,11 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
                 file: file!(),
                 line: line!(),
                 module_path: module_path!(),
+                warmup_ns: #warmup_ns_expr,
+                measurement_ns: #measurement_ns_expr,
+                samples: #samples_expr,
+                min_iterations: #min_iterations_expr,
+                max_iterations: #max_iterations_expr,
             }
         }
     })
@@ -280,6 +306,11 @@ struct BenchConfig {
     budget_ns: Option<u64>,
     tags: Vec<String>,
     async_runtime: AsyncRuntimeConfig,
+    warmup_ns: Option<u64>,
+    measurement_ns: Option<u64>,
+    samples: Option<u64>,
+    min_iterations: Option<u64>,
+    max_iterations: Option<u64>,
 }
 
 fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
@@ -307,6 +338,11 @@ fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
             "enable_io" => enable_io = attr::bool(&meta)?,
             "tags" => config.tags = attr::tags(&meta)?,
             "iterations" => attr::skip_int(&meta)?,
+            "warmup" => config.warmup_ns = parse_duration(&attr::string(&meta)?),
+            "measurement" => config.measurement_ns = parse_duration(&attr::string(&meta)?),
+            "samples" => config.samples = attr::int(&meta)?,
+            "min_iterations" => config.min_iterations = attr::int(&meta)?,
+            "max_iterations" => config.max_iterations = attr::int(&meta)?,
             _ => return Err(attr::unknown(&meta, &name)),
         }
         Ok(())

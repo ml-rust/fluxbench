@@ -56,6 +56,36 @@ pub struct ExecutionConfig {
     pub confidence_level: f64,
 }
 
+impl ExecutionConfig {
+    /// Merge per-benchmark configuration overrides with global defaults.
+    ///
+    /// Priority:
+    /// 1. Per-benchmark `samples` (if set): overrides everything, runs fixed N iterations with no warmup
+    /// 2. Per-benchmark `warmup_ns`/`measurement_ns`: override global values
+    /// 3. Per-benchmark `min/max_iterations`: override global values
+    /// 4. Falls back to global config for anything not overridden
+    pub fn resolve_for_benchmark(&self, bench: &BenchmarkDef) -> ExecutionConfig {
+        // Fixed sample count mode: per-bench samples override everything
+        if let Some(n) = bench.samples {
+            return ExecutionConfig {
+                warmup_time_ns: 0,
+                measurement_time_ns: 0,
+                min_iterations: Some(n),
+                max_iterations: Some(n),
+                ..self.clone()
+            };
+        }
+
+        ExecutionConfig {
+            warmup_time_ns: bench.warmup_ns.unwrap_or(self.warmup_time_ns),
+            measurement_time_ns: bench.measurement_ns.unwrap_or(self.measurement_time_ns),
+            min_iterations: bench.min_iterations.or(self.min_iterations),
+            max_iterations: bench.max_iterations.or(self.max_iterations),
+            ..self.clone()
+        }
+    }
+}
+
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
@@ -128,18 +158,19 @@ impl Executor {
     /// Execute a single benchmark
     fn execute_single(&self, bench: &BenchmarkDef) -> BenchExecutionResult {
         let start = Instant::now();
+        let cfg = self.config.resolve_for_benchmark(bench);
 
         // Run with panic catching
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let bencher = Bencher::new(self.config.track_allocations);
+            let bencher = Bencher::new(cfg.track_allocations);
 
             run_benchmark_loop(
                 bencher,
                 |b| (bench.runner_fn)(b),
-                self.config.warmup_time_ns,
-                self.config.measurement_time_ns,
-                self.config.min_iterations,
-                self.config.max_iterations,
+                cfg.warmup_time_ns,
+                cfg.measurement_time_ns,
+                cfg.min_iterations,
+                cfg.max_iterations,
             )
         }));
 
@@ -249,8 +280,25 @@ impl IsolatedExecutor {
         );
         pb.set_message("Starting isolated workers...");
 
-        // Convert ExecutionConfig to BenchmarkConfig for IPC
-        let ipc_config = BenchmarkConfig {
+        // Build per-benchmark IPC configs
+        let ipc_configs: Vec<BenchmarkConfig> = benchmarks
+            .iter()
+            .map(|bench| {
+                let cfg = self.config.resolve_for_benchmark(bench);
+                BenchmarkConfig {
+                    warmup_time_ns: cfg.warmup_time_ns,
+                    measurement_time_ns: cfg.measurement_time_ns,
+                    min_iterations: cfg.min_iterations,
+                    max_iterations: cfg.max_iterations,
+                    track_allocations: cfg.track_allocations,
+                    fail_on_allocation: false,
+                    timeout_ns: self.timeout.as_nanos() as u64,
+                }
+            })
+            .collect();
+
+        // Use the first config as default for the supervisor
+        let default_config = ipc_configs.first().cloned().unwrap_or(BenchmarkConfig {
             warmup_time_ns: self.config.warmup_time_ns,
             measurement_time_ns: self.config.measurement_time_ns,
             min_iterations: self.config.min_iterations,
@@ -258,15 +306,15 @@ impl IsolatedExecutor {
             track_allocations: self.config.track_allocations,
             fail_on_allocation: false,
             timeout_ns: self.timeout.as_nanos() as u64,
-        };
+        });
 
-        let supervisor = Supervisor::new(ipc_config, self.timeout, self.num_workers);
+        let supervisor = Supervisor::new(default_config, self.timeout, self.num_workers);
 
-        // Run benchmarks via IPC
+        // Run benchmarks via IPC with per-benchmark configs
         let ipc_results = if self.reuse_workers {
-            supervisor.run_with_reuse(benchmarks)
+            supervisor.run_with_reuse_configs(benchmarks, &ipc_configs)
         } else {
-            supervisor.run_all(benchmarks)
+            supervisor.run_all_configs(benchmarks, &ipc_configs)
         };
 
         // Convert IPC results to BenchExecutionResult
