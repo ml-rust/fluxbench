@@ -1,72 +1,82 @@
 //! High-Precision Timing
 //!
-//! Uses RDTSCP on x86_64 for minimal overhead serializing cycle counting,
-//! with fallback to std::time::Instant on other platforms.
+//! Uses RDTSCP on x86_64 and CNTVCT_EL0 on AArch64 for minimal overhead
+//! cycle counting, with fallback to std::time::Instant on other platforms.
 
 use std::time::Duration;
+
+// ─── Inline cycle counter helpers ────────────────────────────────────────────
+
+/// Read the CPU cycle/tick counter (platform-specific).
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn read_cycles() -> u64 {
+    // SAFETY: RDTSCP is available on all x86_64 CPUs since ~2006.
+    // It is serializing by design — waits for all prior instructions
+    // to complete before reading the cycle counter.
+    unsafe {
+        let mut _aux: u32 = 0;
+        std::arch::x86_64::__rdtscp(&mut _aux)
+    }
+}
+
+/// Read the virtual counter timer on AArch64 (comparable to x86 TSC).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn read_cycles() -> u64 {
+    let cnt: u64;
+    // SAFETY: CNTVCT_EL0 is accessible from EL0 (userspace) on all
+    // AArch64 implementations. It provides a monotonically increasing
+    // counter at a fixed frequency (typically the system timer frequency).
+    unsafe {
+        std::arch::asm!("mrs {}, cntvct_el0", out(reg) cnt, options(nostack, nomem));
+    }
+    cnt
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[inline(always)]
+fn read_cycles() -> u64 {
+    0
+}
+
+/// Whether this platform provides real cycle counters.
+pub const HAS_CYCLE_COUNTER: bool = cfg!(target_arch = "x86_64") || cfg!(target_arch = "aarch64");
+
+// ─── Instant ─────────────────────────────────────────────────────────────────
 
 /// High-precision instant for benchmarking
 #[derive(Debug, Clone, Copy)]
 pub struct Instant {
-    #[cfg(target_arch = "x86_64")]
     instant: std::time::Instant,
-    #[cfg(target_arch = "x86_64")]
     tsc: u64,
-    #[cfg(not(target_arch = "x86_64"))]
-    instant: std::time::Instant,
 }
 
 impl Instant {
     /// Capture current instant
     #[inline(always)]
     pub fn now() -> Self {
-        #[cfg(target_arch = "x86_64")]
-        {
-            // SAFETY: RDTSCP is available on all x86_64 CPUs since ~2006.
-            // It is serializing by design — waits for all prior instructions
-            // to complete before reading the cycle counter, unlike RDTSC which
-            // requires a separate lfence.
-            unsafe {
-                let mut _aux: u32 = 0;
-                let tsc = std::arch::x86_64::__rdtscp(&mut _aux);
-                Self {
-                    instant: std::time::Instant::now(),
-                    tsc,
-                }
-            }
-        }
-
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            Self {
-                instant: std::time::Instant::now(),
-            }
+        let tsc = read_cycles();
+        Self {
+            instant: std::time::Instant::now(),
+            tsc,
         }
     }
 
     /// Compute elapsed time since this instant
     #[inline(always)]
     pub fn elapsed(&self) -> Duration {
-        #[cfg(target_arch = "x86_64")]
-        {
-            // Use monotonic wall-clock elapsed time for nanoseconds.
-            // RDTSC is still captured separately for cycle metrics.
-            self.instant.elapsed()
-        }
-
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            self.instant.elapsed()
-        }
+        self.instant.elapsed()
     }
 
-    /// Raw cycle count (x86_64 only)
-    #[cfg(target_arch = "x86_64")]
+    /// Raw cycle/tick count (non-zero on x86_64 and aarch64)
     #[inline(always)]
     pub fn cycles(&self) -> u64 {
         self.tsc
     }
 }
+
+// ─── Timer ───────────────────────────────────────────────────────────────────
 
 /// Timer for measuring benchmark iterations
 pub struct Timer {
@@ -78,14 +88,7 @@ impl Timer {
     /// Start a new timer
     #[inline(always)]
     pub fn start() -> Self {
-        #[cfg(target_arch = "x86_64")]
-        let cycles_start = unsafe {
-            let mut _aux: u32 = 0;
-            std::arch::x86_64::__rdtscp(&mut _aux)
-        };
-        #[cfg(not(target_arch = "x86_64"))]
-        let cycles_start = 0;
-
+        let cycles_start = read_cycles();
         Self {
             start: Instant::now(),
             cycles_start,
@@ -97,18 +100,7 @@ impl Timer {
     pub fn stop(&self) -> (u64, u64) {
         let elapsed = self.start.elapsed();
         let nanos = elapsed.as_nanos() as u64;
-
-        #[cfg(target_arch = "x86_64")]
-        let cycles = {
-            let now = unsafe {
-                let mut _aux: u32 = 0;
-                std::arch::x86_64::__rdtscp(&mut _aux)
-            };
-            now.saturating_sub(self.cycles_start)
-        };
-        #[cfg(not(target_arch = "x86_64"))]
-        let cycles = 0u64;
-
+        let cycles = read_cycles().saturating_sub(self.cycles_start);
         (nanos, cycles)
     }
 }
@@ -167,5 +159,14 @@ mod tests {
 
         // Should be at least 5ms in nanos
         assert!(nanos >= 5_000_000);
+    }
+
+    #[test]
+    fn test_cycle_counter() {
+        if HAS_CYCLE_COUNTER {
+            let a = read_cycles();
+            let b = read_cycles();
+            assert!(b >= a, "cycle counter should be monotonic");
+        }
     }
 }

@@ -13,7 +13,11 @@ mod worker;
 
 pub use allocator::{TrackingAllocator, current_allocation, reset_allocation_counter};
 pub use bencher::{Bencher, BenchmarkResult, IterationMode, run_benchmark_loop};
-pub use measure::{Instant, Timer};
+/// Whether this platform provides hardware cycle counters (x86_64 RDTSCP or AArch64 CNTVCT_EL0).
+/// When `false`, cycle counts are reported as 0 and only wall-clock nanoseconds are available.
+pub use measure::HAS_CYCLE_COUNTER;
+pub use measure::Instant;
+pub use measure::Timer;
 pub use worker::WorkerMain;
 
 /// Benchmark definition registered via `#[flux::bench]`
