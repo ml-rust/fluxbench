@@ -1,7 +1,7 @@
 //! FluxBench CLI Library
 //!
 //! This module provides the CLI infrastructure for benchmark binaries.
-//! Use `fluxbench_cli::run()` in your main function to get the full
+//! Use `fluxbench::run()` (or `fluxbench_cli::run()`) in your main function to get the full
 //! fluxbench CLI experience with your registered benchmarks.
 //!
 //! # Example
@@ -96,6 +96,11 @@ pub struct Cli {
     #[arg(long, default_value = "5")]
     pub measurement: u64,
 
+    /// Fixed sample count mode: skip warmup, run exactly N iterations
+    /// Each iteration becomes one sample. Overrides warmup/measurement/min/max.
+    #[arg(long, short = 'n')]
+    pub samples: Option<u64>,
+
     /// Minimum number of iterations
     #[arg(long)]
     pub min_iterations: Option<u64>,
@@ -122,6 +127,10 @@ pub struct Cli {
     #[arg(long, default_value = "60")]
     pub worker_timeout: u64,
 
+    /// Number of parallel isolated workers
+    #[arg(long, default_value = "1")]
+    pub jobs: usize,
+
     /// Number of threads for parallel statistics computation
     /// 0 = use all available cores (default), 1 = single-threaded
     #[arg(long, short = 'j', default_value = "0")]
@@ -130,6 +139,10 @@ pub struct Cli {
     /// Internal: Run as worker process (used by supervisor)
     #[arg(long, hide = true)]
     pub flux_worker: bool,
+
+    /// Internal: Absorb cargo bench's --bench flag
+    #[arg(long, hide = true)]
+    pub bench: bool,
 }
 
 /// CLI subcommands
@@ -138,11 +151,7 @@ pub enum Commands {
     /// List all discovered benchmarks
     List,
     /// Run benchmarks (default)
-    Run {
-        /// Number of parallel workers
-        #[arg(long, default_value = "1")]
-        jobs: usize,
-    },
+    Run,
     /// Compare against a git ref
     Compare {
         /// Git ref to compare against (e.g., origin/main)
@@ -189,8 +198,8 @@ pub fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::List) => {
             list_benchmarks(&cli)?;
         }
-        Some(Commands::Run { jobs }) => {
-            run_benchmarks(&cli, &config, format, jobs)?;
+        Some(Commands::Run) => {
+            run_benchmarks(&cli, &config, format, cli.jobs)?;
         }
         Some(Commands::Compare { ref git_ref }) => {
             compare_benchmarks(&cli, &config, git_ref, format)?;
@@ -200,7 +209,7 @@ pub fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
             if cli.dry_run {
                 list_benchmarks(&cli)?;
             } else {
-                run_benchmarks(&cli, &config, format, 1)?;
+                run_benchmarks(&cli, &config, format, cli.jobs)?;
             }
         }
     }
@@ -293,6 +302,20 @@ fn build_execution_config(cli: &Cli, config: &FluxConfig) -> ExecutionConfig {
         measurement_ns
     };
 
+    // --samples N: fixed-count mode, no warmup, each iteration = one sample
+    // CLI wins, then flux.toml
+    if let Some(n) = cli.samples.or(config.runner.samples) {
+        return ExecutionConfig {
+            warmup_time_ns: 0,
+            measurement_time_ns: 0,
+            min_iterations: Some(n),
+            max_iterations: Some(n),
+            track_allocations: config.allocator.track,
+            bootstrap_iterations: config.runner.bootstrap_iterations,
+            confidence_level: config.runner.confidence_level,
+        };
+    }
+
     // min/max iterations: CLI wins if set, else config, else default
     let min_iterations = cli.min_iterations.or(config.runner.min_iterations);
     let max_iterations = cli.max_iterations.or(config.runner.max_iterations);
@@ -333,12 +356,19 @@ fn run_benchmarks(
         return Ok(());
     }
 
+    // Determine isolation mode: flux.toml can override CLI default
+    let isolated = if config.runner.isolation.is_isolated() {
+        cli.isolated
+    } else {
+        false
+    };
+
     let threads_str = if cli.threads == 0 {
         "all".to_string()
     } else {
         cli.threads.to_string()
     };
-    let mode_str = if cli.isolated {
+    let mode_str = if isolated {
         if cli.one_shot {
             " (isolated, one-shot)"
         } else {
@@ -361,7 +391,7 @@ fn run_benchmarks(
     let exec_config = build_execution_config(cli, config);
 
     // Execute benchmarks (isolated by default per TDD)
-    let results = if cli.isolated {
+    let results = if isolated {
         let timeout = std::time::Duration::from_secs(cli.worker_timeout);
         let reuse_workers = !cli.one_shot;
         let isolated_executor =
