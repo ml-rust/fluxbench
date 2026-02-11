@@ -140,6 +140,11 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub flux_worker: bool,
 
+    /// Save benchmark results as baseline JSON
+    /// Optionally specify a path; defaults to config or target/fluxbench/baseline.json
+    #[arg(long)]
+    pub save_baseline: Option<Option<PathBuf>>,
+
     /// Internal: Absorb cargo bench's --bench flag
     #[arg(long, hide = true)]
     pub bench: bool,
@@ -456,6 +461,19 @@ fn run_benchmarks(
     // Compute statistics
     let stats = compute_statistics(&results, &exec_config);
 
+    // Warn if allocation tracking is enabled but nothing was recorded
+    if exec_config.track_allocations
+        && !results.is_empty()
+        && results
+            .iter()
+            .all(|r| r.alloc_bytes == 0 && r.alloc_count == 0)
+    {
+        eprintln!(
+            "Warning: allocation tracking enabled but all benchmarks reported 0 bytes allocated.\n\
+             Ensure TrackingAllocator is set as #[global_allocator] in your benchmark binary."
+        );
+    }
+
     // Build report
     let total_duration_ms = start_time.elapsed().as_secs_f64() * 1000.0;
     let mut report = build_report(&results, &stats, &exec_config, total_duration_ms);
@@ -490,6 +508,9 @@ fn run_benchmarks(
     } else {
         print!("{}", output);
     }
+
+    // Save baseline if requested
+    save_baseline_if_needed(cli, config, &report)?;
 
     // Exit with appropriate code
     let has_crashes = report
@@ -666,6 +687,9 @@ fn compare_benchmarks(
         print!("{}", output);
     }
 
+    // Save baseline if requested
+    save_baseline_if_needed(cli, config, &report)?;
+
     // Exit with error if regressions exceed threshold or verifications fail
     let should_fail = report.summary.regressions > 0 || verification_summary.should_fail_ci();
     if should_fail {
@@ -683,6 +707,37 @@ fn compare_benchmarks(
         }
         std::process::exit(1);
     }
+
+    Ok(())
+}
+
+/// Save the report as a baseline JSON file if configured.
+fn save_baseline_if_needed(
+    cli: &Cli,
+    config: &FluxConfig,
+    report: &fluxbench_report::Report,
+) -> anyhow::Result<()> {
+    // Determine if we should save: CLI --save-baseline flag or config.output.save_baseline
+    let should_save = cli.save_baseline.is_some() || config.output.save_baseline;
+    if !should_save {
+        return Ok(());
+    }
+
+    // Resolve path: CLI value > config value > default
+    let path = cli
+        .save_baseline
+        .as_ref()
+        .and_then(|opt| opt.clone())
+        .or_else(|| config.output.baseline_path.as_ref().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("target/fluxbench/baseline.json"));
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let json = generate_json_report(report)?;
+    std::fs::write(&path, json)?;
+    eprintln!("Baseline saved to: {}", path.display());
 
     Ok(())
 }
