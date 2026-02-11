@@ -11,6 +11,7 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
+fluxbench-cli.workspace = true
 fluxbench-core.workspace = true
 fluxbench-macros.workspace = true
 fluxbench-stats.workspace = true
@@ -22,7 +23,6 @@ inventory.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-fluxbench-cli.workspace = true
 rand.workspace = true
 
 [[example]]

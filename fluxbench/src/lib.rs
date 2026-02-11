@@ -79,3 +79,13 @@ pub mod prelude {
 pub mod flux {
     pub use fluxbench_macros::{bench, compare, group, report, synthetic, verify};
 }
+
+/// Run the FluxBench CLI harness.
+///
+/// Call this from your benchmark binary's `main()`:
+/// ```ignore
+/// fn main() {
+///     fluxbench::run().unwrap();
+/// }
+/// ```
+pub use fluxbench_cli::run;

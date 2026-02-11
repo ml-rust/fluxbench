@@ -470,7 +470,7 @@ struct VecScale10000;
 fn main() {
     // Use the standard FluxBench CLI infrastructure
     // All benchmarks defined above are automatically discovered via inventory
-    if let Err(e) = fluxbench_cli::run() {
+    if let Err(e) = fluxbench::run() {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
