@@ -157,7 +157,7 @@ impl Bencher {
         } else {
             // During measurement: accumulate into current sample
             self.current_sample_time_ns += duration_nanos;
-            self.current_sample_cycles += cpu_cycles as u64;
+            self.current_sample_cycles += cpu_cycles;
             self.current_sample_iters += 1;
             self.current_sample_alloc_bytes += alloc_bytes;
             self.current_sample_alloc_count += alloc_count;
