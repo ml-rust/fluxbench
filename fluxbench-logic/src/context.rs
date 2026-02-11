@@ -68,6 +68,11 @@ impl MetricContext {
         }
     }
 
+    /// Check if a metric exists
+    pub fn has(&self, name: &str) -> bool {
+        self.metrics.contains_key(name)
+    }
+
     /// List all metric names
     pub fn metric_names(&self) -> impl Iterator<Item = &String> {
         self.metrics.keys()

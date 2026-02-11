@@ -121,6 +121,31 @@ impl<'a> VerificationContext<'a> {
             Some(missing.join(", "))
         }
     }
+
+    /// Check if expression references any unknown variables (typos/renames).
+    /// Returns `Some(list)` of unknown variable names that are neither in metrics,
+    /// unavailable set, nor builtin functions.
+    pub fn check_unknown_variables(&self, expression: &str) -> Option<Vec<String>> {
+        let variables = extract_variables(expression);
+
+        let unknown: Vec<String> = variables
+            .into_iter()
+            .filter(|v| {
+                !self.metrics.has(v) && !self.unavailable.contains(v) && !is_builtin_function(v)
+            })
+            .collect();
+
+        if unknown.is_empty() {
+            None
+        } else {
+            Some(unknown)
+        }
+    }
+
+    /// Get available metric names for error hints
+    pub fn available_metric_names(&self) -> Vec<String> {
+        self.metrics.metric_names().cloned().collect()
+    }
 }
 
 /// Extract variable names from an evalexpr expression
@@ -164,7 +189,27 @@ pub fn run_verifications(
                 };
             }
 
-            // Step 2: Evaluate the expression
+            // Step 2: Check for unknown variables (typos/renames) before evaluation
+            if let Some(unknown) = context.check_unknown_variables(&v.expression) {
+                let mut available = context.available_metric_names();
+                available.sort();
+                return VerificationResult {
+                    id: v.id.clone(),
+                    expression: v.expression.clone(),
+                    status: VerificationStatus::Error {
+                        message: format!("unknown variable(s): {}", unknown.join(", ")),
+                    },
+                    actual_value: None,
+                    severity: v.severity,
+                    message: format!(
+                        "Unknown variable '{}'. Available metrics: [{}]",
+                        unknown.join("', '"),
+                        available.join(", ")
+                    ),
+                };
+            }
+
+            // Step 3: Evaluate the expression
             match context.metrics.evaluate(&v.expression) {
                 Ok(value) => {
                     let passed = value != 0.0;
@@ -187,29 +232,15 @@ pub fn run_verifications(
                 }
                 Err(e) => {
                     let error_msg = e.to_string();
-                    // Treat "variable not bound" errors as skipped (benchmark wasn't run)
-                    if error_msg.contains("Variable identifier is not bound") {
-                        VerificationResult {
-                            id: v.id.clone(),
-                            expression: v.expression.clone(),
-                            status: VerificationStatus::Skipped {
-                                missing_metrics: "benchmark not run".to_string(),
-                            },
-                            actual_value: None,
-                            severity: v.severity,
-                            message: "Skipped: required benchmarks not run".to_string(),
-                        }
-                    } else {
-                        VerificationResult {
-                            id: v.id.clone(),
-                            expression: v.expression.clone(),
-                            status: VerificationStatus::Error {
-                                message: error_msg.clone(),
-                            },
-                            actual_value: None,
-                            severity: v.severity,
-                            message: format!("Evaluation error: {}", error_msg),
-                        }
+                    VerificationResult {
+                        id: v.id.clone(),
+                        expression: v.expression.clone(),
+                        status: VerificationStatus::Error {
+                            message: error_msg.clone(),
+                        },
+                        actual_value: None,
+                        severity: v.severity,
+                        message: format!("Evaluation error: {}", error_msg),
                     }
                 }
             }
