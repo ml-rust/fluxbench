@@ -69,8 +69,16 @@ pub struct IpcBenchmarkResult {
 #[derive(Debug, Clone)]
 pub enum IpcBenchmarkStatus {
     Success,
-    Failed { message: String },
-    Crashed { message: String },
+    Failed {
+        message: String,
+        kind: String,
+        backtrace: Option<String>,
+    },
+    Crashed {
+        message: String,
+        kind: String,
+        backtrace: Option<String>,
+    },
 }
 
 // ─── Platform-specific poll ──────────────────────────────────────────────────
@@ -399,18 +407,33 @@ impl WorkerHandle {
                 WorkerMessage::Failure {
                     kind,
                     message,
-                    backtrace: _,
+                    backtrace,
                 } => {
+                    let kind_str = match kind {
+                        fluxbench_ipc::FailureKind::Panic => "panic",
+                        fluxbench_ipc::FailureKind::Timeout => "timeout",
+                        fluxbench_ipc::FailureKind::Assertion => "assertion",
+                        fluxbench_ipc::FailureKind::AllocationLimit => "allocation_limit",
+                        fluxbench_ipc::FailureKind::Signal => "signal",
+                        fluxbench_ipc::FailureKind::Unknown => "unknown",
+                    }
+                    .to_string();
                     return Ok(IpcBenchmarkResult {
                         bench_id: bench_id.to_string(),
                         samples: all_samples,
                         total_iterations: 0,
                         total_duration_nanos: 0,
                         status: match kind {
-                            fluxbench_ipc::FailureKind::Panic => {
-                                IpcBenchmarkStatus::Crashed { message }
-                            }
-                            _ => IpcBenchmarkStatus::Failed { message },
+                            fluxbench_ipc::FailureKind::Panic => IpcBenchmarkStatus::Crashed {
+                                message,
+                                kind: kind_str,
+                                backtrace,
+                            },
+                            _ => IpcBenchmarkStatus::Failed {
+                                message,
+                                kind: kind_str,
+                                backtrace,
+                            },
                         },
                     });
                 }
@@ -671,7 +694,11 @@ impl Supervisor {
             samples: Vec::new(),
             total_iterations: 0,
             total_duration_nanos: 0,
-            status: IpcBenchmarkStatus::Crashed { message },
+            status: IpcBenchmarkStatus::Crashed {
+                message,
+                kind: "crashed".to_string(),
+                backtrace: None,
+            },
         }
     }
 

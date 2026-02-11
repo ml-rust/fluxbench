@@ -116,6 +116,9 @@ pub struct BenchExecutionResult {
     pub alloc_count: u64,
     pub duration_ns: u64,
     pub error_message: Option<String>,
+    pub failure_kind: Option<String>,
+    pub backtrace: Option<String>,
+    pub severity: fluxbench_core::Severity,
 }
 
 /// Execute benchmarks and produce results (in-process mode)
@@ -210,6 +213,9 @@ impl Executor {
                     alloc_count,
                     duration_ns,
                     error_message: None,
+                    failure_kind: None,
+                    backtrace: None,
+                    severity: bench.severity,
                 }
             }
             Err(panic) => {
@@ -234,6 +240,9 @@ impl Executor {
                     alloc_count: 0,
                     duration_ns,
                     error_message: Some(message),
+                    failure_kind: Some("panic".to_string()),
+                    backtrace: None,
+                    severity: bench.severity,
                 }
             }
         }
@@ -344,6 +353,9 @@ impl IsolatedExecutor {
                         alloc_count: 0,
                         duration_ns: 0,
                         error_message: Some(format!("Supervisor error: {}", e)),
+                        failure_kind: Some("crashed".to_string()),
+                        backtrace: None,
+                        severity: bench.severity,
                     });
                     pb.inc(1);
                 }
@@ -360,10 +372,28 @@ impl IsolatedExecutor {
         ipc_result: IpcBenchmarkResult,
         bench: &BenchmarkDef,
     ) -> BenchExecutionResult {
-        let (status, error_message) = match ipc_result.status {
-            IpcBenchmarkStatus::Success => (BenchmarkStatus::Passed, None),
-            IpcBenchmarkStatus::Failed { message } => (BenchmarkStatus::Failed, Some(message)),
-            IpcBenchmarkStatus::Crashed { message } => (BenchmarkStatus::Crashed, Some(message)),
+        let (status, error_message, failure_kind, backtrace) = match ipc_result.status {
+            IpcBenchmarkStatus::Success => (BenchmarkStatus::Passed, None, None, None),
+            IpcBenchmarkStatus::Failed {
+                message,
+                kind,
+                backtrace,
+            } => (
+                BenchmarkStatus::Failed,
+                Some(message),
+                Some(kind),
+                backtrace,
+            ),
+            IpcBenchmarkStatus::Crashed {
+                message,
+                kind,
+                backtrace,
+            } => (
+                BenchmarkStatus::Crashed,
+                Some(message),
+                Some(kind),
+                backtrace,
+            ),
         };
 
         // Extract timing samples as f64 for statistics
@@ -397,6 +427,9 @@ impl IsolatedExecutor {
             alloc_count,
             duration_ns: ipc_result.total_duration_nanos,
             error_message,
+            failure_kind,
+            backtrace,
+            severity: bench.severity,
         }
     }
 }

@@ -320,24 +320,30 @@ mod tests {
 
     #[test]
     fn test_benchmark_config_validate_zero_warmup() {
-        let mut config = BenchmarkConfig::default();
-        config.warmup_time_ns = 0;
+        let config = BenchmarkConfig {
+            warmup_time_ns: 0,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_benchmark_config_validate_timeout_lt_measurement() {
-        let mut config = BenchmarkConfig::default();
-        config.timeout_ns = 1_000_000; // 1ms
-        config.measurement_time_ns = 5_000_000_000; // 5s
+        let config = BenchmarkConfig {
+            timeout_ns: 1_000_000,              // 1ms
+            measurement_time_ns: 5_000_000_000, // 5s
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_benchmark_config_validate_max_lt_min() {
-        let mut config = BenchmarkConfig::default();
-        config.min_iterations = Some(200);
-        config.max_iterations = Some(50);
+        let config = BenchmarkConfig {
+            min_iterations: Some(200),
+            max_iterations: Some(50),
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 

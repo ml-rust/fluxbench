@@ -100,6 +100,8 @@ pub fn build_report(
                     p95_ns: s.p95,
                     p99_ns: s.p99,
                     p999_ns: s.p999,
+                    skewness: s.skewness,
+                    kurtosis: s.kurtosis,
                     ci_lower_ns: ci_lower,
                     ci_upper_ns: ci_upper,
                     ci_level: config.confidence_level,
@@ -127,9 +129,12 @@ pub fn build_report(
 
     for (result, metrics) in results.iter().zip(metrics_vec) {
         let failure = result.error_message.as_ref().map(|msg| FailureInfo {
-            kind: "panic".to_string(),
+            kind: result
+                .failure_kind
+                .clone()
+                .unwrap_or_else(|| "panic".to_string()),
             message: msg.clone(),
-            backtrace: None,
+            backtrace: result.backtrace.clone(),
         });
 
         match result.status {
@@ -144,6 +149,7 @@ pub fn build_report(
             name: result.benchmark_name.clone(),
             group: result.group.clone(),
             status: result.status,
+            severity: result.severity,
             file: result.file.clone(),
             line: result.line,
             metrics,
@@ -153,7 +159,7 @@ pub fn build_report(
     }
 
     Report {
-        meta: build_report_meta(),
+        meta: build_report_meta(config),
         results: benchmark_results,
         comparisons: Vec::new(),       // Filled by execute_verifications
         comparison_series: Vec::new(), // Filled by execute_verifications
