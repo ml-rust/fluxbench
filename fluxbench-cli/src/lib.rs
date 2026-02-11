@@ -194,12 +194,19 @@ pub fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
     // Parse output format
     let format: OutputFormat = cli.format.parse().unwrap_or(OutputFormat::Human);
 
+    // Resolve jobs: CLI wins if explicitly set (not default 1), else flux.toml, else 1
+    let jobs = if cli.jobs != 1 {
+        cli.jobs
+    } else {
+        config.runner.jobs.unwrap_or(1)
+    };
+
     match cli.command {
         Some(Commands::List) => {
             list_benchmarks(&cli)?;
         }
         Some(Commands::Run) => {
-            run_benchmarks(&cli, &config, format, cli.jobs)?;
+            run_benchmarks(&cli, &config, format, jobs)?;
         }
         Some(Commands::Compare { ref git_ref }) => {
             compare_benchmarks(&cli, &config, git_ref, format)?;
@@ -209,7 +216,7 @@ pub fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
             if cli.dry_run {
                 list_benchmarks(&cli)?;
             } else {
-                run_benchmarks(&cli, &config, format, cli.jobs)?;
+                run_benchmarks(&cli, &config, format, jobs)?;
             }
         }
     }
@@ -276,6 +283,22 @@ fn list_benchmarks(cli: &Cli) -> anyhow::Result<()> {
     }
 
     println!("{} benchmarks found.", total);
+
+    // Show all available tags across the entire suite (not just filtered results)
+    // so users can discover what tags they can filter by.
+    let mut tag_counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for bench in &all_benchmarks {
+        for tag in bench.tags {
+            *tag_counts.entry(tag).or_default() += 1;
+        }
+    }
+    if !tag_counts.is_empty() {
+        let tags_display: Vec<String> = tag_counts
+            .iter()
+            .map(|(tag, count)| format!("{} ({})", tag, count))
+            .collect();
+        println!("Tags: {}", tags_display.join(", "));
+    }
 
     Ok(())
 }
@@ -352,6 +375,21 @@ fn run_benchmarks(
     let benchmarks = filter_benchmarks(cli, &all_benchmarks);
 
     if benchmarks.is_empty() {
+        // If filtering by tag and no matches, check if the tag exists at all
+        if let Some(ref tag) = cli.tag {
+            let all_tags: std::collections::BTreeSet<&str> = all_benchmarks
+                .iter()
+                .flat_map(|b| b.tags.iter().copied())
+                .collect();
+            if !all_tags.contains(tag.as_str()) {
+                let available: Vec<&str> = all_tags.into_iter().collect();
+                eprintln!(
+                    "Warning: tag '{}' not found. Available tags: {}",
+                    tag,
+                    available.join(", ")
+                );
+            }
+        }
         println!("No benchmarks found.");
         return Ok(());
     }
@@ -389,6 +427,14 @@ fn run_benchmarks(
 
     // Build execution config from flux.toml + CLI overrides
     let exec_config = build_execution_config(cli, config);
+
+    if exec_config.bootstrap_iterations > 0 && exec_config.bootstrap_iterations < 100 {
+        eprintln!(
+            "Warning: bootstrap_iterations={} is very low; confidence intervals will be unreliable. \
+             Use >= 1000 for meaningful results, or 0 to skip bootstrap.",
+            exec_config.bootstrap_iterations
+        );
+    }
 
     // Execute benchmarks (isolated by default per TDD)
     let results = if isolated {

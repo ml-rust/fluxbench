@@ -76,6 +76,9 @@ pub struct RunnerConfig {
     /// Confidence level (e.g., 0.95 for 95%)
     #[serde(default = "default_confidence_level")]
     pub confidence_level: f64,
+    /// Number of parallel isolated workers
+    #[serde(default)]
+    pub jobs: Option<usize>,
 }
 
 impl Default for RunnerConfig {
@@ -90,6 +93,7 @@ impl Default for RunnerConfig {
             max_iterations: None,
             bootstrap_iterations: default_bootstrap_iterations(),
             confidence_level: default_confidence_level(),
+            jobs: None,
         }
     }
 }
@@ -281,6 +285,8 @@ isolation = "process"  # "process", "in-process", or "thread"
 # min_iterations = 100
 # Maximum iterations (uncomment to enable)
 # max_iterations = 1000000
+# Number of parallel isolated workers (uncomment to enable)
+# jobs = 4
 # Bootstrap iterations for confidence intervals
 bootstrap_iterations = 10000
 # Confidence level (0.0 to 1.0)
