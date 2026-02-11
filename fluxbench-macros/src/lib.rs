@@ -172,6 +172,8 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
         .unwrap_or(quote! { None });
     let tags: Vec<_> = config.tags.iter().map(|t| quote! { #t }).collect();
 
+    let depends_on_tokens: Vec<_> = config.depends_on.iter().map(|d| quote! { #d }).collect();
+
     let warmup_ns_expr = config
         .warmup_ns
         .map(|v| quote! { Some(#v) })
@@ -246,6 +248,7 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
                         samples: #samples_expr,
                         min_iterations: #min_iterations_expr,
                         max_iterations: #max_iterations_expr,
+                        depends_on: &[#(#depends_on_tokens),*],
                     }
                 }
             });
@@ -296,6 +299,7 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
                 samples: #samples_expr,
                 min_iterations: #min_iterations_expr,
                 max_iterations: #max_iterations_expr,
+                depends_on: &[#(#depends_on_tokens),*],
             }
         }
     })
@@ -354,6 +358,8 @@ struct BenchConfig {
     max_iterations: Option<u64>,
     /// Parameterized benchmark args: `args = [10, 100, 1000]`
     args: Vec<syn::Expr>,
+    /// Dependencies: `depends_on = ["bench_a", "bench_b"]`
+    depends_on: Vec<String>,
 }
 
 fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
@@ -387,6 +393,7 @@ fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
             "min_iterations" => config.min_iterations = attr::int(&meta)?,
             "max_iterations" => config.max_iterations = attr::int(&meta)?,
             "args" => config.args = attr::expr_array(&meta)?,
+            "depends_on" => config.depends_on = attr::string_array(&meta)?,
             _ => return Err(attr::unknown(&meta, &name)),
         }
         Ok(())

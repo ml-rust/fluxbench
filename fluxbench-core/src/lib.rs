@@ -55,6 +55,8 @@ pub struct BenchmarkDef {
     pub min_iterations: Option<u64>,
     /// Per-benchmark maximum iterations
     pub max_iterations: Option<u64>,
+    /// Benchmark IDs that must run before this one
+    pub depends_on: &'static [&'static str],
 }
 
 /// Severity levels for CI integration
