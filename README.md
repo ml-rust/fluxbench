@@ -23,8 +23,7 @@ Benchmarking framework for Rust with crash isolation, statistical rigor, and CI 
 
 ```toml
 [dev-dependencies]
-fluxbench = "0.1"
-fluxbench-cli = "0.1"
+fluxbench = "<latest-version>"
 ```
 
 ### 2. Configure Bench Target
@@ -58,7 +57,7 @@ fn fibonacci(b: &mut Bencher) {
 }
 
 fn main() {
-    fluxbench_cli::run().unwrap();
+    fluxbench::run().unwrap();
 }
 ```
 
@@ -184,11 +183,13 @@ struct P99Check;
 ```
 
 **Severity Levels:**
+
 - `critical`: Fails the benchmark suite (exit code 1)
 - `warning`: Reported but doesn't fail
 - `info`: Informational only
 
 **Available Metrics** (for benchmark name `bench_name`):
+
 - `bench_name` - Mean time (nanoseconds)
 - `bench_name_min` - Minimum time
 - `bench_name_max` - Maximum time
@@ -215,6 +216,7 @@ struct SpeedupSignificant;
 ```
 
 The formula supports:
+
 - Arithmetic: `+`, `-`, `*`, `/`, `%`
 - Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=`
 - Logical: `&&`, `||`
