@@ -7,13 +7,11 @@
 # regression detection. Cache keys use prefix matching so the latest baseline
 # from main is always picked up, even across many merges.
 #
-# Also runs on workflow_dispatch for manual baseline refresh.
+# Triggered manually via workflow_dispatch (must be run from the main branch).
 
 name: Baseline
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
