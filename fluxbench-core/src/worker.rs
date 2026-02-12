@@ -31,7 +31,7 @@ pub fn shutdown_requested() -> bool {
 fn install_sigterm_handler() {
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = sigterm_handler as usize;
+        sa.sa_sigaction = sigterm_handler as *const () as usize;
         sa.sa_flags = libc::SA_RESTART;
         libc::sigemptyset(&mut sa.sa_mask);
         libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
