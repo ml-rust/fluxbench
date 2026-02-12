@@ -36,6 +36,7 @@ env:
 
 jobs:
   test:
+    name: Test Suite
     if: github.event.pull_request.draft == false
     uses: ./.github/workflows/test.yml
 
