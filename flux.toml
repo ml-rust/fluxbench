@@ -61,6 +61,6 @@ save_baseline = false
 # Regression threshold percentage — fail CI if exceeded (default: 5.0)
 regression_threshold = 5.0
 # Emit GitHub Actions annotations (::warning, ::error) (default: false)
-github_annotations = false
+github_annotations = true
 # Exit non-zero on critical verification failures (default: true)
 fail_on_critical = true
