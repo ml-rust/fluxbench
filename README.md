@@ -354,42 +354,61 @@ cargo bench -- --dry-run
 
 ## Configuration
 
-Create a `flux.toml` in your project root:
+FluxBench works out of the box with sensible defaults — no configuration file is needed. For workspace-wide customization, you can optionally create a `flux.toml` in your project root. FluxBench auto-discovers it by walking up from the current directory.
+
+Settings are applied in this priority order: **macro attribute > CLI flag > flux.toml > built-in default**.
+
+### `[runner]` — Benchmark Execution
+
+Control how benchmarks are measured:
 
 ```toml
 [runner]
-warmup_time = "3s"
-measurement_time = "5s"
-timeout = "60s"
-isolation = "process"
-# min_iterations = 100
-# max_iterations = 1000000
-bootstrap_iterations = 10000
-confidence_level = 0.95
-
-[allocator]
-track = true
-fail_on_allocation = false
-# max_bytes_per_iter = 1024
-
-[output]
-format = "human"
-directory = "target/fluxbench"
-save_baseline = false
-# baseline_path = "baseline.json"
-
-[visuals]
-theme = "light"
-width = 1280
-height = 720
-
-[ci]
-regression_threshold = 5.0
-github_annotations = false
-fail_on_critical = true
+warmup_time = "500ms"        # Warmup before measurement (default: "3s")
+measurement_time = "1s"      # Measurement duration (default: "5s")
+timeout = "30s"              # Per-benchmark timeout (default: "60s")
+isolation = "process"        # "process", "in-process", or "thread" (default: "process")
+bootstrap_iterations = 1000  # Bootstrap resamples for CIs (default: 10000)
+confidence_level = 0.95      # Confidence level, 0.0–1.0 (default: 0.95)
+# samples = 5               # Fixed sample count — skips warmup, runs exactly N iterations
+# min_iterations = 100       # Minimum iterations per sample (default: auto-tuned)
+# max_iterations = 1000000   # Maximum iterations per sample (default: auto-tuned)
+# jobs = 4                   # Parallel isolated workers (default: sequential)
 ```
 
-CLI options override `flux.toml` settings.
+### `[allocator]` — Allocation Tracking
+
+Monitor heap allocations during benchmarks:
+
+```toml
+[allocator]
+track = true                 # Track allocations during benchmarks (default: true)
+fail_on_allocation = false   # Fail if any allocation occurs during measurement (default: false)
+# max_bytes_per_iter = 1024  # Maximum bytes per iteration (default: unlimited)
+```
+
+### `[output]` — Output & Baselines
+
+Configure reporting and baseline persistence:
+
+```toml
+[output]
+format = "human"                    # "human", "json", "github", "html", "csv" (default: "human")
+directory = "target/fluxbench"      # Output directory for reports and baselines (default: "target/fluxbench")
+save_baseline = false               # Save a JSON baseline after each run (default: false)
+# baseline_path = "baseline.json"   # Compare against a saved baseline (default: unset)
+```
+
+### `[ci]` — CI Integration
+
+Control how FluxBench behaves in CI environments:
+
+```toml
+[ci]
+regression_threshold = 5.0   # Fail CI if regression exceeds this percentage (default: 5.0)
+github_annotations = true    # Emit ::warning and ::error annotations on PRs (default: false)
+fail_on_critical = true      # Exit non-zero on critical verification failures (default: true)
+```
 
 ## Output Formats
 
@@ -504,6 +523,7 @@ fn main() { fluxbench::run(); }
 ```
 
 Results will include allocation metrics for each benchmark:
+
 - **alloc_bytes** — total bytes allocated per iteration
 - **alloc_count** — number of allocations per iteration
 
