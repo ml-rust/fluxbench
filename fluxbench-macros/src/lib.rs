@@ -202,7 +202,7 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
         let mut registrations = Vec::new();
         for (i, arg_expr) in config.args.iter().enumerate() {
             let arg_label = expr_to_label(arg_expr);
-            let bench_id = format!("{}/{}", base_id, arg_label);
+            let bench_id = format!("{}@{}", base_id, arg_label);
             let wrapper_name = format_ident!("_flux_wrapper_{}_{}", fn_name, i);
 
             let runner_block = if is_async {

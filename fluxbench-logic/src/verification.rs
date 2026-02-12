@@ -152,7 +152,8 @@ impl<'a> VerificationContext<'a> {
 fn extract_variables(expression: &str) -> Vec<String> {
     static IDENT_RE: OnceLock<Regex> = OnceLock::new();
     // Safety: this regex literal is guaranteed to compile
-    let re = IDENT_RE.get_or_init(|| Regex::new(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b").unwrap());
+    let re = IDENT_RE
+        .get_or_init(|| Regex::new(r"\b([a-zA-Z_][a-zA-Z0-9_]*(?:@[a-zA-Z0-9_]+)*)\b").unwrap());
 
     re.captures_iter(expression)
         .map(|c| c[1].to_string())
