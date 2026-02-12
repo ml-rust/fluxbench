@@ -1,0 +1,38 @@
+[package]
+name = "fluxbench-examples"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+fluxbench.workspace = true
+tokio.workspace = true
+rand.workspace = true
+regex = "1"
+
+[[example]]
+name = "feature_iteration"
+
+[[example]]
+name = "feature_async"
+
+[[example]]
+name = "feature_params"
+
+[[example]]
+name = "feature_verify"
+
+[[example]]
+name = "feature_compare"
+
+[[example]]
+name = "feature_allocations"
+
+[[example]]
+name = "feature_panic"
+
+[[example]]
+name = "library_bench"
+
+[[example]]
+name = "ci_regression"
