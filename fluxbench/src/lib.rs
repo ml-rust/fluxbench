@@ -1,13 +1,17 @@
 //! # FluxBench
 //!
-//! Benchmarking framework for Rust.
+//! Benchmarking framework for Rust with crash isolation, statistical rigor, and CI integration.
 //!
-//! FluxBench is a next-generation benchmarking platform that provides:
-//! - **Process Isolation**: Crash-resilient "Fail-Late" architecture
-//! - **Zero-Copy IPC**: Efficient data transfer with rkyv
-//! - **Statistical Rigor**: Bootstrap resampling with BCa intervals
-//! - **CI Integration**: Severity levels, GitHub summaries, baseline comparison
-//! - **Algebraic Verification**: Performance assertions in code
+//! FluxBench provides a next-generation benchmarking platform:
+//! - **Process Isolation**: Crash-resilient "Fail-Late" architecture; panicking benchmarks don't crash the suite
+//! - **Zero-Copy IPC**: Efficient supervisor-worker communication using rkyv serialization
+//! - **Statistical Rigor**: Bootstrap resampling with BCa (bias-corrected and accelerated) confidence intervals
+//! - **CI Integration**: Severity levels (critical/warning/info), GitHub Actions summaries, baseline comparison
+//! - **Algebraic Verification**: Performance assertions directly in code with mathematical expressions
+//! - **Synthetic Metrics**: Compute derived metrics from benchmark results
+//! - **Multi-Way Comparisons**: Generate comparison tables and series charts
+//! - **Allocation Tracking**: `TrackingAllocator` measures heap usage per iteration
+//! - **High-Precision Timing**: RDTSC cycle counting on x86_64 with Instant fallback
 //!
 //! ## Quick Start
 //!
@@ -44,7 +48,8 @@
 // Re-export core types
 pub use fluxbench_core::{
     Bencher, BenchmarkDef, BenchmarkResult, ChartDef, ChartType, CompareDef, GroupDef,
-    IterationMode, ReportDef, Severity, current_allocation, reset_allocation_counter,
+    IterationMode, ReportDef, Severity, TrackingAllocator, current_allocation,
+    reset_allocation_counter,
 };
 
 // Re-export macros
