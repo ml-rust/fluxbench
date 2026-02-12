@@ -1,6 +1,7 @@
 //! FluxBench Logic - Algebraic Verification Engine
 //!
-//! Evaluates performance assertions and synthetic metrics using evalexpr.
+//! Evaluates performance assertions and synthetic metrics using mathematical expressions.
+//! Provides verification rules (pass/fail/warn), synthetic metric computation, and dependency graphs.
 
 mod context;
 mod graph;

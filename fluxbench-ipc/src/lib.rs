@@ -2,6 +2,7 @@
 //!
 //! Zero-copy serialization protocol for supervisor-worker communication.
 //! Uses rkyv for efficient binary serialization with no parsing overhead.
+//! Handles benchmark configuration, sample collection, and heartbeat coordination.
 
 mod framing;
 mod messages;
