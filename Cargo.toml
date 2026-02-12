@@ -9,6 +9,7 @@ members = [
     "fluxbench-macros",
     "fluxbench-report",
     "fluxbench-stats",
+    "examples",
 ]
 
 [workspace.package]
