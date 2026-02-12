@@ -1,14 +1,16 @@
-name: CI
+# Reusable test workflow: lint, format, docs, and cross-platform tests.
+#
+# Called by:
+#   - benchmark.yml (PR regression checks)
+#   - baseline.yml  (post-merge baseline saves)
+#   - release.yml   (via benchmark.yml)
+#
+# Not triggered directly — use workflow_call only.
+
+name: Test
 
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
-  workflow_dispatch:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
 
 permissions:
   contents: read
@@ -18,7 +20,6 @@ env:
 
 jobs:
   lint:
-    if: github.event.pull_request.draft == false
     name: Lint, Format & Docs
     runs-on: ubuntu-latest
     steps:
@@ -46,14 +47,12 @@ jobs:
         run: cargo test --workspace --doc
 
   test:
-    if: github.event.pull_request.draft == false
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-
     steps:
       - uses: actions/checkout@v4
 

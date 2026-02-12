@@ -1,0 +1,58 @@
+# Save benchmark baseline after merging to main.
+#
+# This workflow runs the same benchmarks as benchmark.yml but in "save" mode:
+# it writes a baseline JSON to the GitHub Actions cache, keyed by commit SHA.
+#
+# benchmark.yml (on PRs) restores this cache to compare against, enabling
+# regression detection. Cache keys use prefix matching so the latest baseline
+# from main is always picked up, even across many merges.
+#
+# Also runs on workflow_dispatch for manual baseline refresh.
+
+name: Baseline
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: baseline-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  baseline:
+    needs: test
+    name: Save Benchmark Baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: bench
+
+      # --save-baseline writes target/fluxbench/baseline.json with timing data
+      # for all benchmarks. This becomes the comparison point for PR checks.
+      - name: Run benchmarks and save baseline
+        run: cargo run --example ci_regression -p fluxbench-examples --release -- --save-baseline
+
+      # Cache keyed by SHA so each merge gets its own entry.
+      # benchmark.yml uses restore-keys prefix matching to find the latest one.
+      - name: Cache baseline
+        uses: actions/cache/save@v4
+        with:
+          path: target/fluxbench/baseline.json
+          key: fluxbench-baseline-${{ github.sha }}
