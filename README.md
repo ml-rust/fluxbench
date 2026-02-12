@@ -9,8 +9,8 @@ Benchmarking framework for Rust with crash isolation, statistical rigor, and CI 
 - **Synthetic Metrics**: Compute derived metrics from benchmark results: `#[synthetic(formula = "bench_a / bench_b")]`
 - **Multi-Way Comparisons**: Generate comparison tables and series charts with `#[compare]`
 - **Bootstrap Confidence Intervals**: BCa (bias-corrected and accelerated) resampling, not just percentiles
-- **Zero-Copy IPC**: Efficient data transfer between processes using rkyv serialization
-- **RDTSC Timing**: High-precision cycle counting on x86_64 with `std::time::Instant` fallback
+- **Zero-Copy IPC**: Efficient supervisor-worker communication using rkyv serialization (no parsing overhead)
+- **High-Precision Timing**: RDTSC cycle counting on x86_64 and AArch64 with `std::time::Instant` fallback for wall-clock nanoseconds
 - **Flexible Execution**: Process-isolated by default; in-process mode available for debugging
 - **Configuration**: `flux.toml` file with CLI override support
 - **Multiple Output Formats**: JSON, HTML, CSV, GitHub Actions summaries
@@ -191,11 +191,20 @@ struct P99Check;
 **Available Metrics** (for benchmark name `bench_name`):
 
 - `bench_name` - Mean time (nanoseconds)
+- `bench_name_median` - Median time
 - `bench_name_min` - Minimum time
 - `bench_name_max` - Maximum time
-- `bench_name_p50` - Median
+- `bench_name_p50` - 50th percentile (median)
+- `bench_name_p90` - 90th percentile
 - `bench_name_p95` - 95th percentile
 - `bench_name_p99` - 99th percentile
+- `bench_name_p999` - 99.9th percentile
+- `bench_name_std_dev` - Standard deviation
+- `bench_name_skewness` - Distribution skewness
+- `bench_name_kurtosis` - Distribution kurtosis
+- `bench_name_ci_lower` - 95% confidence interval lower bound
+- `bench_name_ci_upper` - 95% confidence interval upper bound
+- `bench_name_throughput` - Operations per second (if measured)
 
 ### Synthetic Metrics
 
