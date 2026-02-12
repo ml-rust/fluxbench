@@ -65,6 +65,7 @@ pub struct ComparisonSeries {
 /// Report metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportMeta {
+    pub schema_version: u32,
     pub version: String,
     pub timestamp: DateTime<Utc>,
     pub git_commit: Option<String>,

@@ -45,6 +45,7 @@ pub fn build_report_meta(exec_config: &ExecutionConfig) -> ReportMeta {
     };
 
     ReportMeta {
+        schema_version: 1,
         version: env!("CARGO_PKG_VERSION").to_string(),
         timestamp: Utc::now(),
         git_commit,
