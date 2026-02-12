@@ -16,21 +16,32 @@ pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum FrameError {
+    /// I/O error during frame read/write.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// rkyv serialization failed.
     #[error("Serialization error: {0}")]
     Serialization(String),
 
+    /// rkyv deserialization failed.
     #[error("Deserialization error: {0}")]
     Deserialization(String),
 
+    /// Frame exceeds MAX_FRAME_SIZE.
     #[error("Frame too large: {size} bytes (max {max} bytes)")]
-    FrameTooLarge { size: usize, max: usize },
+    FrameTooLarge {
+        /// Actual frame size in bytes.
+        size: usize,
+        /// Maximum allowed frame size in bytes.
+        max: usize,
+    },
 
+    /// Malformed frame data.
     #[error("Invalid frame: {0}")]
     InvalidFrame(String),
 
+    /// Connection closed (end of stream).
     #[error("End of stream")]
     EndOfStream,
 }

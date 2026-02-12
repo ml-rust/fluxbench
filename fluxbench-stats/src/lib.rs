@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! FluxBench Statistical Engine
 //!
 //! Provides robust statistical analysis for benchmark results including:

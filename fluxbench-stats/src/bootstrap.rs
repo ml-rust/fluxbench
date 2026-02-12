@@ -4,7 +4,7 @@
 //! methods for computing confidence intervals.
 
 use crate::{BCA_THRESHOLD, DEFAULT_BOOTSTRAP_ITERATIONS, DEFAULT_CONFIDENCE_LEVEL};
-use rand::seq::SliceRandom;
+use rand::Rng;
 use rand::thread_rng;
 use rayon::prelude::*;
 use thiserror::Error;
@@ -45,8 +45,11 @@ pub enum BootstrapMethod {
 /// Confidence interval bounds
 #[derive(Debug, Clone, Copy)]
 pub struct ConfidenceInterval {
+    /// Lower bound of the confidence interval
     pub lower: f64,
+    /// Upper bound of the confidence interval
     pub upper: f64,
+    /// Confidence level (e.g., 0.95 for 95% CI)
     pub level: f64,
 }
 
@@ -82,6 +85,19 @@ pub enum BootstrapError {
 /// Compute bootstrap confidence interval for the mean
 ///
 /// Automatically selects BCa method for small samples (N < 100).
+///
+/// # Examples
+///
+/// ```ignore
+/// # use fluxbench_stats::{compute_bootstrap, BootstrapConfig};
+/// let samples = vec![100.0, 102.0, 98.0, 101.0, 99.0];
+/// let config = BootstrapConfig::default();
+/// let result = compute_bootstrap(&samples, &config).unwrap();
+/// println!("Mean: {}", result.point_estimate);
+/// println!("95% CI: [{}, {}]",
+///     result.confidence_interval.lower,
+///     result.confidence_interval.upper);
+/// ```
 pub fn compute_bootstrap(
     samples: &[f64],
     config: &BootstrapConfig,
@@ -175,30 +191,43 @@ pub fn compute_bootstrap(
     })
 }
 
-/// Generate bootstrap means using parallel iteration (Rayon)
+/// Generate bootstrap means using parallel iteration (Rayon).
+///
+/// # Panics
+///
+/// Panics if `samples` is empty. Callers must validate this before calling.
 fn generate_bootstrap_means_parallel(samples: &[f64], iterations: usize) -> Vec<f64> {
+    assert!(!samples.is_empty(), "samples must not be empty");
+    let n = samples.len();
     (0..iterations)
         .into_par_iter()
         .map_init(thread_rng, |rng, _| {
             let mut sum = 0.0;
-            for _ in 0..samples.len() {
-                sum += *samples.choose(rng).unwrap();
+            for _ in 0..n {
+                // SAFETY: index is always in bounds because gen_range(0..n) < n
+                sum += samples[rng.gen_range(0..n)];
             }
-            sum / samples.len() as f64
+            sum / n as f64
         })
         .collect()
 }
 
-/// Generate bootstrap means serially (for testing or small samples)
+/// Generate bootstrap means serially (for testing or small samples).
+///
+/// # Panics
+///
+/// Panics if `samples` is empty. Callers must validate this before calling.
 fn generate_bootstrap_means_serial(samples: &[f64], iterations: usize) -> Vec<f64> {
+    assert!(!samples.is_empty(), "samples must not be empty");
+    let n = samples.len();
     let mut rng = thread_rng();
     (0..iterations)
         .map(|_| {
             let mut sum = 0.0;
-            for _ in 0..samples.len() {
-                sum += *samples.choose(&mut rng).unwrap();
+            for _ in 0..n {
+                sum += samples[rng.gen_range(0..n)];
             }
-            sum / samples.len() as f64
+            sum / n as f64
         })
         .collect()
 }

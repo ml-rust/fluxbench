@@ -12,9 +12,15 @@ use crate::percentiles::compute_percentile;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutlierMethod {
     /// IQR method: outliers are outside [Q1 - k*IQR, Q3 + k*IQR]
-    Iqr { k: u32 }, // k is multiplied by 0.5, so k=3 means 1.5*IQR
+    Iqr {
+        /// Multiplier for IQR (multiplied by 0.5, so k=3 means 1.5*IQR)
+        k: u32,
+    },
     /// Z-score method: outliers are beyond z standard deviations
-    ZScore { threshold: u32 }, // threshold is multiplied by 0.5
+    ZScore {
+        /// Number of standard deviations (multiplied by 0.5)
+        threshold: u32,
+    },
     /// No outlier detection
     None,
 }
@@ -63,6 +69,16 @@ impl OutlierAnalysis {
 }
 
 /// Detect outliers in samples using specified method
+///
+/// # Examples
+///
+/// ```ignore
+/// # use fluxbench_stats::{detect_outliers, OutlierMethod};
+/// let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0, 100.0];
+/// let analysis = detect_outliers(&samples, OutlierMethod::default());
+/// println!("Outliers found: {}", analysis.outlier_count);
+/// println!("Outlier percentage: {:.1}%", analysis.outlier_percentage());
+/// ```
 pub fn detect_outliers(samples: &[f64], method: OutlierMethod) -> OutlierAnalysis {
     if samples.is_empty() {
         return OutlierAnalysis {

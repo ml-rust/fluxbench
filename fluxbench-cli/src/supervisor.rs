@@ -29,26 +29,38 @@ use std::os::unix::io::{FromRawFd, RawFd};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+/// Errors that can occur during supervisor operations
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum SupervisorError {
+    /// Failed to spawn worker process.
     #[error("Failed to spawn worker: {0}")]
     SpawnFailed(#[from] std::io::Error),
 
+    /// IPC communication error.
     #[error("IPC error: {0}")]
     IpcError(String),
 
+    /// Worker process crashed or exited unexpectedly.
     #[error("Worker crashed: {0}")]
     WorkerCrashed(String),
 
+    /// Worker did not respond within timeout.
     #[error("Timeout waiting for worker")]
     Timeout,
 
+    /// Benchmark with the given ID not found.
     #[error("Benchmark not found: {0}")]
     BenchmarkNotFound(String),
 
+    /// Worker protocol version or message type mismatch.
     #[error("Worker protocol error: expected {expected}, got {got}")]
-    ProtocolError { expected: String, got: String },
+    ProtocolError {
+        /// Expected message or protocol version.
+        expected: String,
+        /// Actual message or protocol version received.
+        got: String,
+    },
 }
 
 impl From<FrameError> for SupervisorError {
@@ -60,24 +72,39 @@ impl From<FrameError> for SupervisorError {
 /// Result from a benchmark run via IPC
 #[derive(Debug)]
 pub struct IpcBenchmarkResult {
+    /// Benchmark identifier.
     pub bench_id: String,
+    /// Timing samples collected during measurement phase.
     pub samples: Vec<Sample>,
+    /// Total number of iterations performed.
     pub total_iterations: u64,
+    /// Total benchmark duration in nanoseconds.
     pub total_duration_nanos: u64,
+    /// Status of the benchmark execution.
     pub status: IpcBenchmarkStatus,
 }
 
+/// Status of a benchmark execution
 #[derive(Debug, Clone)]
 pub enum IpcBenchmarkStatus {
+    /// Benchmark completed successfully.
     Success,
+    /// Benchmark failed with an error (non-panic).
     Failed {
+        /// Error message.
         message: String,
+        /// Error kind/category.
         kind: String,
+        /// Optional backtrace from the error.
         backtrace: Option<String>,
     },
+    /// Benchmark crashed (panic or signal).
     Crashed {
+        /// Error message.
         message: String,
+        /// Crash kind/category.
         kind: String,
+        /// Optional backtrace from the crash.
         backtrace: Option<String>,
     },
 }
@@ -736,7 +763,9 @@ impl Supervisor {
 
             let run_result = match worker.as_mut() {
                 Some(worker) => worker.run_benchmark(bench.id, cfg),
-                None => unreachable!("worker should exist after spawn check"),
+                None => Err(SupervisorError::IpcError(
+                    "worker unexpectedly absent after spawn".to_string(),
+                )),
             };
 
             match run_result {

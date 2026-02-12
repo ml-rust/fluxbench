@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! # FluxBench
 //!
 //! Benchmarking framework for Rust with crash isolation, statistical rigor, and CI integration.

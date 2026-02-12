@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! FluxBench Report - Reporting and Visualization
 //!
 //! Generates various output formats:

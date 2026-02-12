@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! FluxBench CLI Library
 //!
 //! This module provides the CLI infrastructure for benchmark binaries.
@@ -49,6 +50,7 @@ use std::time::Instant;
 #[command(name = "fluxbench")]
 #[command(author, version, about = "FluxBench - benchmarking framework for Rust")]
 pub struct Cli {
+    /// Optional subcommand (List, Run, Compare); defaults to Run
     #[command(subcommand)]
     pub command: Option<Commands>,
 

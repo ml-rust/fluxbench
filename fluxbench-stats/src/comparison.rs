@@ -85,6 +85,19 @@ impl Default for ComparisonConfig {
 ///
 /// Returns the probability that `candidate` is slower than `baseline`,
 /// along with effect size and confidence intervals for the difference.
+///
+/// # Examples
+///
+/// ```ignore
+/// # use fluxbench_stats::{compare_distributions, ComparisonConfig};
+/// let baseline = vec![100.0, 102.0, 98.0, 101.0, 99.0];
+/// let candidate = vec![105.0, 107.0, 103.0, 106.0, 104.0];
+/// let config = ComparisonConfig::default();
+/// let result = compare_distributions(&baseline, &candidate, &config).unwrap();
+/// println!("Relative change: {:.2}%", result.relative_change);
+/// println!("P(regression): {:.2}", result.probability_regression);
+/// println!("Effect size: {:.2}", result.effect_size);
+/// ```
 pub fn compare_distributions(
     baseline: &[f64],
     candidate: &[f64],
@@ -203,12 +216,16 @@ fn interpret_effect_size(d: f64) -> EffectInterpretation {
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum ComparisonError {
+    /// Baseline samples are empty
     #[error("Baseline samples are empty")]
     EmptyBaseline,
+    /// Candidate samples are empty
     #[error("Candidate samples are empty")]
     EmptyCandidate,
+    /// Baseline needs at least 2 samples
     #[error("Baseline needs at least 2 samples")]
     InsufficientBaseline,
+    /// Candidate needs at least 2 samples
     #[error("Candidate needs at least 2 samples")]
     InsufficientCandidate,
 }

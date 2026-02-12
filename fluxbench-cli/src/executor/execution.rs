@@ -128,6 +128,7 @@ pub struct Executor {
 }
 
 impl Executor {
+    /// Create a new in-process executor with the given configuration
     pub fn new(config: ExecutionConfig) -> Self {
         Self {
             config,

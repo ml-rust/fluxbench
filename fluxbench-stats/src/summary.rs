@@ -10,29 +10,39 @@ use crate::percentiles::compute_percentile;
 /// Comprehensive summary statistics
 #[derive(Debug, Clone)]
 pub struct SummaryStatistics {
-    // Central tendency (computed from CLEANED data)
+    /// Mean (computed from cleaned data with outliers removed)
     pub mean: f64,
+    /// Median (computed from cleaned data with outliers removed)
     pub median: f64,
+    /// Standard deviation (computed from cleaned data with outliers removed)
     pub std_dev: f64,
 
-    // Extremes (computed from ALL data - outliers preserved)
+    /// Minimum value (from all data, preserving outliers)
     pub min: f64,
+    /// Maximum value (from all data, preserving outliers)
     pub max: f64,
 
-    // Percentiles (computed from ALL data - outliers preserved)
+    /// 50th percentile/median (from all data, preserving outliers)
     pub p50: f64,
+    /// 90th percentile (from all data, preserving outliers)
     pub p90: f64,
+    /// 95th percentile (from all data, preserving outliers)
     pub p95: f64,
+    /// 99th percentile (from all data, preserving outliers)
     pub p99: f64,
+    /// 99.9th percentile (from all data, preserving outliers)
     pub p999: f64,
 
-    // Distribution shape (computed from CLEANED data)
+    /// Skewness of the distribution (from cleaned data)
     pub skewness: f64,
+    /// Kurtosis of the distribution (from cleaned data)
     pub kurtosis: f64,
 
-    // Sample info
+    /// Total number of samples (before outlier removal)
     pub sample_count: usize,
+    /// Number of outliers detected
     pub outlier_count: usize,
+    /// Complete outlier analysis including detection bounds and indices
     pub outlier_analysis: OutlierAnalysis,
 }
 
@@ -54,6 +64,20 @@ pub struct CyclesStatistics {
 }
 
 /// Compute summary statistics with proper separation of cleaned vs raw data
+///
+/// Mean/median/stddev are computed from cleaned data (outliers removed), while
+/// percentiles and extremes preserve outliers as they represent important tail behavior.
+///
+/// # Examples
+///
+/// ```ignore
+/// # use fluxbench_stats::{compute_summary, OutlierMethod};
+/// let samples = vec![100.0, 102.0, 98.0, 101.0, 99.0];
+/// let stats = compute_summary(&samples, OutlierMethod::default());
+/// println!("Mean: {:.2}", stats.mean);
+/// println!("P99: {:.2}", stats.p99);
+/// println!("Outliers detected: {}", stats.outlier_count);
+/// ```
 pub fn compute_summary(samples: &[f64], outlier_method: OutlierMethod) -> SummaryStatistics {
     if samples.is_empty() {
         return SummaryStatistics {

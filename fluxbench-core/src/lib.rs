@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! FluxBench Core - Worker Runtime
 //!
 //! This crate provides the execution environment for benchmarks:

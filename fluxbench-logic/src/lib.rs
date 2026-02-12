@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! FluxBench Logic - Algebraic Verification Engine
 //!
 //! Evaluates performance assertions and synthetic metrics using mathematical expressions.

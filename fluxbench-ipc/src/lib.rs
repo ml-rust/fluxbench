@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! FluxBench IPC Protocol
 //!
 //! Zero-copy serialization protocol for supervisor-worker communication.

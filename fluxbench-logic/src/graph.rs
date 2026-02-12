@@ -9,9 +9,11 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum GraphError {
+    /// A cycle was detected in the dependency graph during topological sort.
     #[error("Cycle detected: {0}")]
     CycleDetected(String),
 
+    /// A referenced node does not exist in the graph.
     #[error("Unknown node: {0}")]
     UnknownNode(String),
 }

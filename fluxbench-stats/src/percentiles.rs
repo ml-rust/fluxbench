@@ -6,17 +6,34 @@
 /// Standard percentiles to compute
 #[derive(Debug, Clone)]
 pub struct Percentiles {
+    /// 50th percentile (median)
     pub p50: f64,
+    /// 75th percentile
     pub p75: f64,
+    /// 90th percentile
     pub p90: f64,
+    /// 95th percentile
     pub p95: f64,
+    /// 99th percentile
     pub p99: f64,
+    /// 99.9th percentile
     pub p999: f64,
 }
 
 /// Compute a single percentile from samples
 ///
 /// Uses linear interpolation between nearest ranks.
+///
+/// # Examples
+///
+/// ```ignore
+/// # use fluxbench_stats::compute_percentile;
+/// let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+/// let p50 = compute_percentile(&samples, 50.0);  // Median
+/// let p95 = compute_percentile(&samples, 95.0);  // 95th percentile
+/// println!("Median: {}", p50);
+/// println!("P95: {}", p95);
+/// ```
 pub fn compute_percentile(samples: &[f64], percentile: f64) -> f64 {
     if samples.is_empty() {
         return 0.0;

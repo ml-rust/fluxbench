@@ -14,9 +14,13 @@ pub use fluxbench_core::Severity;
 /// Verification definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Verification {
+    /// Unique identifier for the verification
     pub id: String,
+    /// Expression to evaluate (e.g., "(raw - overhead) < 50")
     pub expression: String,
+    /// Severity level (Critical, Warning, Info)
     pub severity: Severity,
+    /// Tolerance margin for numeric comparisons
     pub margin: f64,
 }
 
@@ -46,14 +50,17 @@ pub enum VerificationStatus {
 }
 
 impl VerificationStatus {
+    /// Returns true if this is a Passed status.
     pub fn is_success(&self) -> bool {
         matches!(self, VerificationStatus::Passed)
     }
 
+    /// Returns true if this is a Failed status.
     pub fn is_failure(&self) -> bool {
         matches!(self, VerificationStatus::Failed)
     }
 
+    /// Returns true if this is either Failed or Error (requires action).
     pub fn is_actionable_failure(&self) -> bool {
         matches!(
             self,
@@ -61,6 +68,10 @@ impl VerificationStatus {
         )
     }
 
+    /// Returns true if this status should cause CI to fail given the severity level.
+    ///
+    /// Only critical failures and critical errors affect exit code; skipped verifications
+    /// do not fail CI since the underlying dependency crash already did.
     pub fn affects_exit_code(&self, severity: Severity) -> bool {
         match (self, severity) {
             (VerificationStatus::Failed, Severity::Critical) => true,
@@ -75,11 +86,17 @@ impl VerificationStatus {
 /// Result of a verification check
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
+    /// Unique identifier for the verification
     pub id: String,
+    /// Expression that was evaluated
     pub expression: String,
+    /// Status of the verification (Passed, Failed, Skipped, or Error)
     pub status: VerificationStatus,
+    /// Actual computed value from the expression, if available
     pub actual_value: Option<f64>,
+    /// Severity level of the verification
     pub severity: Severity,
+    /// Human-readable message describing the result
     pub message: String,
 }
 
@@ -92,12 +109,14 @@ impl VerificationResult {
 
 /// Context for verification with explicit missing metric tracking
 pub struct VerificationContext<'a> {
+    /// Reference to available metrics for expression evaluation
     metrics: &'a MetricContext,
     /// Metrics that are unavailable (crashed/filtered benchmarks)
     unavailable: FxHashSet<String>,
 }
 
 impl<'a> VerificationContext<'a> {
+    /// Creates a new verification context with the given metrics and unavailable metric names.
     pub fn new(metrics: &'a MetricContext, unavailable: FxHashSet<String>) -> Self {
         Self {
             metrics,
@@ -169,6 +188,16 @@ fn is_builtin_function(name: &str) -> bool {
 }
 
 /// Run all verifications
+///
+/// Evaluates each verification expression against available metrics. Handles missing dependencies,
+/// unknown variables, and expression evaluation errors explicitly in the results.
+///
+/// # Arguments
+/// * `verifications` - List of verification definitions to evaluate
+/// * `context` - Context containing available metrics and tracking unavailable ones
+///
+/// # Returns
+/// Vector of verification results with status and messages for each verification
 pub fn run_verifications(
     verifications: &[Verification],
     context: &VerificationContext,
@@ -252,11 +281,17 @@ pub fn run_verifications(
 /// Summary of verification results
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct VerificationSummary {
+    /// Number of verifications that passed
     pub passed: usize,
+    /// Number of verifications that failed
     pub failed: usize,
+    /// Number of verifications that were skipped (due to missing dependencies)
     pub skipped: usize,
+    /// Number of verifications that had evaluation errors
     pub errors: usize,
+    /// Number of critical verifications that failed
     pub critical_failures: usize,
+    /// Number of critical verifications that had errors
     pub critical_errors: usize,
 }
 
@@ -273,6 +308,15 @@ impl VerificationSummary {
 }
 
 /// Aggregate verification results for CI reporting
+///
+/// Counts all verification statuses and identifies critical failures/errors that should
+/// cause CI to fail.
+///
+/// # Arguments
+/// * `results` - Verification results to summarize
+///
+/// # Returns
+/// Summary with counts and critical status information
 pub fn aggregate_verifications(results: &[VerificationResult]) -> VerificationSummary {
     let mut summary = VerificationSummary::default();
 
