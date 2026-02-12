@@ -1,21 +1,57 @@
 # FluxBench
 
-Benchmarking framework for Rust with crash isolation, statistical rigor, and CI integration.
+[![Crates.io](https://img.shields.io/crates/v/fluxbench)](https://crates.io/crates/fluxbench) [![docs.rs](https://img.shields.io/docsrs/fluxbench)](https://docs.rs/fluxbench) [![License](https://img.shields.io/crates/l/fluxbench)](LICENSE) [![MSRV](https://img.shields.io/badge/MSRV-1.85-blue)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+
+Rigorous, configurable, and composable benchmarking framework for Rust.
+
+## The problem
+
+Most Rust benchmarking tools give you timings. That's it. When a benchmark panics, your entire suite dies. When you want to know _"is version B actually faster than version A?"_, you're left eyeballing numbers. And when CI passes despite a 40% regression, you only find out about it from your users.
+
+## What FluxBench does differently
+
+**Start in 5 lines, grow without rewriting.** A benchmark is just a function with `#[bench]`:
+
+```rust
+#[bench]
+fn my_benchmark(b: &mut Bencher) {
+    b.iter(|| expensive_operation());
+}
+```
+
+Run `cargo bench` and you get bootstrap confidence intervals, percentile stats (p50–p999), outlier detection, and cycle-accurate timing — all automatic.
+
+**Then compose what you need:**
+
+```rust
+#[bench(group = "sorting", tags = "alloc")]      // organize and filter
+#[verify(expr = "sort_new < sort_old")]          // fail CI if regression
+#[synthetic(formula = "sort_old / sort_new")]    // compute speedup ratio
+#[compare(baseline = "sort_old")]                // generate comparison tables
+```
+
+Each attribute is independent. Use one, use all, add them later — your benchmarks don't need to be restructured.
+
+**Benchmarks that crash don't take down the suite.** Every benchmark runs in its own process. A panic, segfault, or timeout in one is reported as a failure for _that_ benchmark — the rest keep running. Your CI finishes, you see what broke, you fix it.
+
+**Performance rules live next to the code they protect.** Instead of a fragile shell script that parses output and compares numbers, you write `#[verify(expr = "api_latency_p99 < 5000", severity = "critical")]` and FluxBench enforces it on every run. Critical failures exit non-zero. Warnings get reported. Info is logged.
+
+**Multiple output formats.** The same `cargo bench` run can produce terminal output for you, JSON for your pipeline, HTML for your team, CSV for a spreadsheet, or a GitHub Actions summary — just change `--format`.
 
 ## Features
 
-- **Process-Isolated Benchmarks**: Panicking benchmarks don't terminate the suite. Fail-late architecture with supervisor-worker IPC.
-- **Algebraic Verification**: Performance assertions directly in code: `#[verify(expr = "bench_a < bench_b")]`
-- **Synthetic Metrics**: Compute derived metrics from benchmark results: `#[synthetic(formula = "bench_a / bench_b")]`
-- **Multi-Way Comparisons**: Generate comparison tables and series charts with `#[compare]`
-- **Bootstrap Confidence Intervals**: BCa (bias-corrected and accelerated) resampling, not just percentiles
-- **Zero-Copy IPC**: Efficient supervisor-worker communication using rkyv serialization (no parsing overhead)
-- **High-Precision Timing**: RDTSC cycle counting on x86_64 and AArch64 with `std::time::Instant` fallback for wall-clock nanoseconds
-- **Flexible Execution**: Process-isolated by default; in-process mode available for debugging
-- **Configuration**: `flux.toml` file with CLI override support
-- **Multiple Output Formats**: JSON, HTML, CSV, GitHub Actions summaries
-- **CI Integration**: Exit code 1 on critical failures; severity levels for different assertion types
-- **Async Support**: Benchmarks with tokio runtimes via `#[bench(runtime = "multi_thread")]`
+| Feature                                                 | Description                                                          |
+| ------------------------------------------------------- | -------------------------------------------------------------------- |
+| [Crash isolation](#crash-isolation)                     | Supervisor-worker architecture — panics never terminate the suite    |
+| [Bootstrap statistics](#custom-bootstrap-configuration) | BCa bootstrap CIs, RDTSC cycle counting, outlier detection, p50–p999 |
+| [Verification](#verification-macros)                    | `#[verify(expr = "bench_a < bench_b", severity = "critical")]`       |
+| [Synthetic metrics](#synthetic-metrics)                 | `#[synthetic(formula = "bench_a / bench_b", unit = "x")]`            |
+| [Comparisons](#comparisons)                             | `#[compare(...)]` — tables and series charts vs baseline             |
+| [Output formats](#output-formats)                       | Human, JSON, HTML, CSV, GitHub Actions summary                       |
+| [CI integration](#ci-integration)                       | Exit code 1 on critical failures, `flux.toml` severity levels        |
+| [Allocation tracking](#allocation-tracking)             | Per-iteration heap bytes and count                                   |
+| [Async support](#async-benchmarks)                      | Tokio runtimes via `#[bench(runtime = "multi_thread")]`              |
+| [Configuration](#configuration)                         | `flux.toml` with CLI override, macro > CLI > file > default          |
 
 ## Quick Start
 
@@ -76,18 +112,6 @@ cargo bench -- --group compute --warmup 5 --measurement 10
 ```
 
 ## Defining Benchmarks
-
-### Basic Benchmark
-
-```rust
-#[bench]
-fn my_benchmark(b: &mut Bencher) {
-    b.iter(|| {
-        // Code to benchmark
-        expensive_operation()
-    });
-}
-```
 
 ### With Setup
 
@@ -188,23 +212,18 @@ struct P99Check;
 - `warning`: Reported but doesn't fail
 - `info`: Informational only
 
-**Available Metrics** (for benchmark name `bench_name`):
+**Available Metrics** (for a benchmark named `bench_name`):
 
-- `bench_name` - Mean time (nanoseconds)
-- `bench_name_median` - Median time
-- `bench_name_min` - Minimum time
-- `bench_name_max` - Maximum time
-- `bench_name_p50` - 50th percentile (median)
-- `bench_name_p90` - 90th percentile
-- `bench_name_p95` - 95th percentile
-- `bench_name_p99` - 99th percentile
-- `bench_name_p999` - 99.9th percentile
-- `bench_name_std_dev` - Standard deviation
-- `bench_name_skewness` - Distribution skewness
-- `bench_name_kurtosis` - Distribution kurtosis
-- `bench_name_ci_lower` - 95% confidence interval lower bound
-- `bench_name_ci_upper` - 95% confidence interval upper bound
-- `bench_name_throughput` - Operations per second (if measured)
+| Suffix                              | Metric                              |
+| ----------------------------------- | ----------------------------------- |
+| _(none)_                            | Mean time (ns)                      |
+| `_median`                           | Median time                         |
+| `_min` / `_max`                     | Min / max time                      |
+| `_p50` `_p90` `_p95` `_p99` `_p999` | Percentiles                         |
+| `_std_dev`                          | Standard deviation                  |
+| `_skewness` / `_kurtosis`           | Distribution shape                  |
+| `_ci_lower` / `_ci_upper`           | 95% confidence interval bounds      |
+| `_throughput`                       | Operations per second (if measured) |
 
 ### Synthetic Metrics
 
@@ -331,26 +350,7 @@ cargo bench -- --baseline previous_results.json
 cargo bench -- --dry-run
 ```
 
-### Full Option Reference
-
-- `--filter <PATTERN>` - Regex to match benchmark names
-- `--group <GROUP>` - Run only benchmarks in this group
-- `--tag <TAG>` - Include only benchmarks with this tag
-- `--skip-tag <TAG>` - Exclude benchmarks with this tag
-- `--warmup <SECONDS>` - Warmup duration before measurement (default: 3)
-- `--measurement <SECONDS>` - Measurement duration (default: 5)
-- `--min-iterations <N>` - Minimum iterations
-- `--max-iterations <N>` - Maximum iterations
-- `--isolated <BOOL>` - Run in separate processes (default: true)
-- `--one-shot` - Fresh worker process per benchmark (default: reuse workers)
-- `--worker-timeout <SECONDS>` - Worker process timeout (default: 60)
-- `--threads <N>` / `-j <N>` - Threads for parallel statistics computation (default: 0 = all cores)
-- `--format <FORMAT>` - Output format: json, html, csv, github-summary, human (default: human)
-- `--output <FILE>` - Output file (default: stdout)
-- `--baseline <FILE>` - Load baseline for comparison
-- `--threshold <PCT>` - Regression threshold percentage
-- `--verbose` / `-v` - Enable debug logging
-- `--dry-run` - List benchmarks without executing
+Run `cargo bench -- --help` for the full option reference.
 
 ## Configuration
 
@@ -358,9 +358,7 @@ FluxBench works out of the box with sensible defaults — no configuration file 
 
 Settings are applied in this priority order: **macro attribute > CLI flag > flux.toml > built-in default**.
 
-### `[runner]` — Benchmark Execution
-
-Control how benchmarks are measured:
+### Runner
 
 ```toml
 [runner]
@@ -376,9 +374,7 @@ confidence_level = 0.95      # Confidence level, 0.0–1.0 (default: 0.95)
 # jobs = 4                   # Parallel isolated workers (default: sequential)
 ```
 
-### `[allocator]` — Allocation Tracking
-
-Monitor heap allocations during benchmarks:
+### Allocator
 
 ```toml
 [allocator]
@@ -387,9 +383,7 @@ fail_on_allocation = false   # Fail if any allocation occurs during measurement 
 # max_bytes_per_iter = 1024  # Maximum bytes per iteration (default: unlimited)
 ```
 
-### `[output]` — Output & Baselines
-
-Configure reporting and baseline persistence:
+### Output
 
 ```toml
 [output]
@@ -399,9 +393,7 @@ save_baseline = false               # Save a JSON baseline after each run (defau
 # baseline_path = "baseline.json"   # Compare against a saved baseline (default: unset)
 ```
 
-### `[ci]` — CI Integration
-
-Control how FluxBench behaves in CI environments:
+### CI Integration
 
 ```toml
 [ci]
@@ -481,25 +473,6 @@ Renders verification results in GitHub Actions workflow:
 cargo bench -- --format github-summary >> $GITHUB_STEP_SUMMARY
 ```
 
-## Crash Isolation
-
-Panicking benchmarks don't terminate the suite:
-
-```rust
-#[bench]
-fn may_panic(b: &mut Bencher) {
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-    b.iter(|| {
-        let count = COUNTER.fetch_add(1, SeqCst);
-        if count >= 5 {
-            panic!("Intentional panic!");  // Isolated; suite continues
-        }
-    });
-}
-```
-
-With `--isolated=true` (default), the panic occurs in a worker process and is reported as a failure for that benchmark, not the suite.
-
 ## Advanced Usage
 
 ### Allocation Tracking
@@ -564,32 +537,30 @@ confidence_level = 0.99
 
 Higher iterations = more precise intervals, slower reporting.
 
-## Project Structure
-
-The fluxbench workspace consists of:
-
-- **fluxbench** - Meta-crate, public API
-- **fluxbench-cli** - Supervisor process and CLI
-- **fluxbench-core** - Bencher, timer, worker, allocator
-- **fluxbench-ipc** - Zero-copy IPC transport with rkyv
-- **fluxbench-stats** - Bootstrap resampling and percentile computation
-- **fluxbench-logic** - Verification, synthetic metrics, dependency graphs
-- **fluxbench-macros** - Procedural macros for bench, verify, synthetic, compare
-- **fluxbench-report** - JSON, HTML, CSV, GitHub output generation
-
 ## Examples
 
-See `fluxbench/examples/benchmarks.rs` for a comprehensive example:
+The `examples/` crate contains runnable demos for each feature:
+
+| Example               | What it shows                             |
+| --------------------- | ----------------------------------------- |
+| `feature_iteration`   | `iter`, `iter_with_setup`, `iter_batched` |
+| `feature_async`       | Async benchmarks with tokio runtimes      |
+| `feature_params`      | Parameterized benchmarks with `args`      |
+| `feature_verify`      | `#[verify]` performance assertions        |
+| `feature_compare`     | `#[compare]` baseline tables and series   |
+| `feature_allocations` | Heap allocation tracking                  |
+| `feature_panic`       | Crash isolation (panicking benchmarks)    |
+| `library_bench`       | Benchmarking a library crate              |
+| `ci_regression`       | CI regression detection workflow          |
 
 ```bash
-cargo run --example benchmarks -- list
-cargo run --example benchmarks -- --group sorting
-cargo run --example benchmarks -- --format json --output results.json
+cargo run -p fluxbench-examples --example feature_iteration --release
+cargo run -p fluxbench-examples --example feature_verify --release -- --format json
 ```
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See LICENSE for details.
+Licensed under the Apache License, Version 2.0.
 
 ## Contributing
 
