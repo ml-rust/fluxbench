@@ -101,13 +101,17 @@ fn write_baseline_comparison(output: &mut String, report: &Report) {
             let baseline = format_duration(cmp.baseline_mean_ns);
             let change = format_change(cmp.relative_change);
             let status = if cmp.relative_change.abs() < 1.0 {
-                "stable"
+                "stable".to_string()
             } else if cmp.is_significant && cmp.relative_change > 0.0 {
-                "REGRESSION"
+                if result.threshold > 0.0 {
+                    format!("REGRESSION (>{:.0}%)", result.threshold)
+                } else {
+                    "REGRESSION".to_string()
+                }
             } else if cmp.is_significant && cmp.relative_change < 0.0 {
-                "improved"
+                "improved".to_string()
             } else {
-                "within noise"
+                "within noise".to_string()
             };
 
             output.push_str(&format!(
@@ -213,7 +217,8 @@ fn write_verifications(output: &mut String, verifications: &[VerificationResult]
     output.push('\n');
 }
 
-fn format_duration(ns: f64) -> String {
+/// Format a duration in nanoseconds to a human-readable string (ns/us/ms/s).
+pub fn format_duration(ns: f64) -> String {
     if ns < 1_000.0 {
         format!("{:.0} ns", ns)
     } else if ns < 1_000_000.0 {

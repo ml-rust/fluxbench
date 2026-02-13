@@ -36,8 +36,8 @@ use clap::{Parser, Subcommand};
 use fluxbench_core::{BenchmarkDef, WorkerMain};
 use fluxbench_logic::aggregate_verifications;
 use fluxbench_report::{
-    OutputFormat, generate_csv_report, generate_github_summary, generate_html_report,
-    generate_json_report,
+    OutputFormat, format_duration, generate_csv_report, generate_github_summary,
+    generate_html_report, generate_json_report,
 };
 use rayon::ThreadPoolBuilder;
 use regex::Regex;
@@ -67,8 +67,9 @@ pub struct Cli {
     pub output: Option<PathBuf>,
 
     /// Load baseline for comparison
+    /// Optionally specify a path; defaults to config or target/fluxbench/baseline.json
     #[arg(long)]
-    pub baseline: Option<PathBuf>,
+    pub baseline: Option<Option<PathBuf>>,
 
     /// Dry run - list benchmarks without executing
     #[arg(long)]
@@ -480,6 +481,33 @@ fn run_benchmarks(
     let total_duration_ms = start_time.elapsed().as_secs_f64() * 1000.0;
     let mut report = build_report(&results, &stats, &exec_config, total_duration_ms);
 
+    // Load and apply baseline comparison if --baseline was passed
+    if let Some(baseline_path) = resolve_baseline_path(&cli.baseline, config) {
+        if baseline_path.exists() {
+            match std::fs::read_to_string(&baseline_path).and_then(|json| {
+                serde_json::from_str::<fluxbench_report::Report>(&json)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            }) {
+                Ok(baseline) => {
+                    let threshold = cli.threshold.unwrap_or(config.ci.regression_threshold);
+                    apply_baseline_comparison(&mut report, &baseline, threshold);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: failed to load baseline {}: {}",
+                        baseline_path.display(),
+                        e
+                    );
+                }
+            }
+        } else {
+            eprintln!(
+                "Warning: baseline file not found: {}",
+                baseline_path.display()
+            );
+        }
+    }
+
     // Run comparisons, synthetics, and verifications
     let (comparison_results, comparison_series, synthetic_results, verification_results) =
         execute_verifications(&results, &stats);
@@ -492,6 +520,11 @@ fn run_benchmarks(
     // Update summary with verification info
     report.summary.critical_failures = verification_summary.critical_failures;
     report.summary.warnings = verification_summary.failed - verification_summary.critical_failures;
+
+    // Emit GitHub Actions annotations if enabled
+    if config.ci.github_annotations {
+        emit_github_annotations(&report);
+    }
 
     // Generate output
     let output = match format {
@@ -542,8 +575,8 @@ fn compare_benchmarks(
     git_ref: &str,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    // Load baseline
-    let baseline_path = cli.baseline.as_ref().ok_or_else(|| {
+    // Load baseline — resolve path from CLI, config, or default
+    let baseline_path = resolve_baseline_path(&cli.baseline, config).ok_or_else(|| {
         anyhow::anyhow!(
             "--baseline required for comparison, or use 'compare' command with a git ref"
         )
@@ -556,7 +589,7 @@ fn compare_benchmarks(
         ));
     }
 
-    let baseline_json = std::fs::read_to_string(baseline_path)?;
+    let baseline_json = std::fs::read_to_string(&baseline_path)?;
     let baseline: fluxbench_report::Report = serde_json::from_str(&baseline_json)?;
     let resolved_git_ref = resolve_git_ref(git_ref)?;
 
@@ -601,68 +634,9 @@ fn compare_benchmarks(
     let total_duration_ms = start_time.elapsed().as_secs_f64() * 1000.0;
     let mut report = build_report(&results, &stats, &exec_config, total_duration_ms);
 
-    // Store baseline metadata for summary header
-    report.baseline_meta = Some(baseline.meta.clone());
-
-    // Add comparison data
+    // Apply baseline comparison data
     let regression_threshold = cli.threshold.unwrap_or(config.ci.regression_threshold);
-    let baseline_map: std::collections::HashMap<_, _> = baseline
-        .results
-        .iter()
-        .filter_map(|r| r.metrics.as_ref().map(|m| (r.id.clone(), m.clone())))
-        .collect();
-
-    for result in &mut report.results {
-        if let (Some(metrics), Some(baseline_metrics)) =
-            (&result.metrics, baseline_map.get(&result.id))
-        {
-            let baseline_mean = baseline_metrics.mean_ns;
-            let absolute_change = metrics.mean_ns - baseline_mean;
-            let relative_change = if baseline_mean > 0.0 {
-                (absolute_change / baseline_mean) * 100.0
-            } else {
-                0.0
-            };
-
-            // Determine significance via CI non-overlap and threshold crossing.
-            let ci_non_overlap = metrics.ci_upper_ns < baseline_metrics.ci_lower_ns
-                || metrics.ci_lower_ns > baseline_metrics.ci_upper_ns;
-            let is_significant = relative_change.abs() > regression_threshold && ci_non_overlap;
-
-            // Track regressions/improvements
-            if relative_change > regression_threshold {
-                report.summary.regressions += 1;
-            } else if relative_change < -regression_threshold {
-                report.summary.improvements += 1;
-            }
-
-            let mut effect_size = if metrics.std_dev_ns > f64::EPSILON {
-                absolute_change / metrics.std_dev_ns
-            } else {
-                0.0
-            };
-            if !effect_size.is_finite() {
-                effect_size = 0.0;
-            }
-
-            let probability_regression = if ci_non_overlap {
-                if relative_change > 0.0 { 0.99 } else { 0.01 }
-            } else if relative_change > 0.0 {
-                0.60
-            } else {
-                0.40
-            };
-
-            result.comparison = Some(fluxbench_report::Comparison {
-                baseline_mean_ns: baseline_mean,
-                absolute_change_ns: absolute_change,
-                relative_change,
-                probability_regression,
-                is_significant,
-                effect_size,
-            });
-        }
-    }
+    apply_baseline_comparison(&mut report, &baseline, regression_threshold);
 
     // Run comparisons, synthetics, and verifications
     let (comparison_results, comparison_series, synthetic_results, verification_results) =
@@ -674,6 +648,11 @@ fn compare_benchmarks(
     report.verifications = verification_results;
     report.summary.critical_failures = verification_summary.critical_failures;
     report.summary.warnings = verification_summary.failed - verification_summary.critical_failures;
+
+    // Emit GitHub Actions annotations if enabled
+    if config.ci.github_annotations {
+        emit_github_annotations(&report);
+    }
 
     // Generate output
     let output = match format {
@@ -747,6 +726,177 @@ fn save_baseline_if_needed(
     Ok(())
 }
 
+/// Apply baseline comparison data to the report.
+///
+/// Computes per-benchmark regression/improvement metrics by comparing current
+/// results against baseline means, CI overlap, and effect size.
+fn apply_baseline_comparison(
+    report: &mut fluxbench_report::Report,
+    baseline: &fluxbench_report::Report,
+    regression_threshold: f64,
+) {
+    report.baseline_meta = Some(baseline.meta.clone());
+
+    let baseline_map: std::collections::HashMap<_, _> = baseline
+        .results
+        .iter()
+        .filter_map(|r| r.metrics.as_ref().map(|m| (r.id.clone(), m.clone())))
+        .collect();
+
+    for result in &mut report.results {
+        if let (Some(metrics), Some(baseline_metrics)) =
+            (&result.metrics, baseline_map.get(&result.id))
+        {
+            // Use per-benchmark threshold if set (> 0.0), otherwise global
+            let effective_threshold = if result.threshold > 0.0 {
+                result.threshold
+            } else {
+                regression_threshold
+            };
+
+            let baseline_mean = baseline_metrics.mean_ns;
+            let absolute_change = metrics.mean_ns - baseline_mean;
+            let relative_change = if baseline_mean > 0.0 {
+                (absolute_change / baseline_mean) * 100.0
+            } else {
+                0.0
+            };
+
+            let ci_non_overlap = metrics.ci_upper_ns < baseline_metrics.ci_lower_ns
+                || metrics.ci_lower_ns > baseline_metrics.ci_upper_ns;
+            let is_significant = relative_change.abs() > effective_threshold && ci_non_overlap;
+
+            if relative_change > effective_threshold {
+                report.summary.regressions += 1;
+            } else if relative_change < -effective_threshold {
+                report.summary.improvements += 1;
+            }
+
+            let mut effect_size = if metrics.std_dev_ns > f64::EPSILON {
+                absolute_change / metrics.std_dev_ns
+            } else {
+                0.0
+            };
+            if !effect_size.is_finite() {
+                effect_size = 0.0;
+            }
+
+            let probability_regression = if ci_non_overlap {
+                if relative_change > 0.0 { 0.99 } else { 0.01 }
+            } else if relative_change > 0.0 {
+                0.60
+            } else {
+                0.40
+            };
+
+            result.comparison = Some(fluxbench_report::Comparison {
+                baseline_mean_ns: baseline_mean,
+                absolute_change_ns: absolute_change,
+                relative_change,
+                probability_regression,
+                is_significant,
+                effect_size,
+            });
+        }
+    }
+}
+
+/// Resolve baseline path from CLI flag, config, or default.
+///
+/// - `Some(Some(path))` — explicit path from `--baseline /path/to/file`
+/// - `Some(None)` — `--baseline` with no value, use config or default
+/// - `None` — flag not passed at all
+fn resolve_baseline_path(
+    cli_baseline: &Option<Option<PathBuf>>,
+    config: &FluxConfig,
+) -> Option<PathBuf> {
+    match cli_baseline {
+        Some(Some(path)) => Some(path.clone()),
+        Some(None) => {
+            // --baseline passed without path: use config or default
+            Some(
+                config
+                    .output
+                    .baseline_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("target/fluxbench/baseline.json")),
+            )
+        }
+        None => None,
+    }
+}
+
+/// Emit `::error::` and `::warning::` annotations for GitHub Actions.
+///
+/// These appear inline on PR diffs when running in GitHub Actions CI.
+fn emit_github_annotations(report: &fluxbench_report::Report) {
+    // Annotate crashed/failed benchmarks
+    for result in &report.results {
+        match result.status {
+            fluxbench_report::BenchmarkStatus::Crashed => {
+                let msg = result
+                    .failure
+                    .as_ref()
+                    .map(|f| f.message.as_str())
+                    .unwrap_or("benchmark crashed");
+                println!(
+                    "::error file={},line={}::{}: {}",
+                    result.file, result.line, result.id, msg
+                );
+            }
+            fluxbench_report::BenchmarkStatus::Failed => {
+                let msg = result
+                    .failure
+                    .as_ref()
+                    .map(|f| f.message.as_str())
+                    .unwrap_or("benchmark failed");
+                println!(
+                    "::error file={},line={}::{}: {}",
+                    result.file, result.line, result.id, msg
+                );
+            }
+            _ => {}
+        }
+
+        // Annotate significant regressions
+        if let Some(cmp) = &result.comparison {
+            if cmp.is_significant && cmp.relative_change > 0.0 {
+                println!(
+                    "::error file={},line={}::{}: regression {:+.1}% ({} → {})",
+                    result.file,
+                    result.line,
+                    result.id,
+                    cmp.relative_change,
+                    format_duration(cmp.baseline_mean_ns),
+                    result
+                        .metrics
+                        .as_ref()
+                        .map(|m| format_duration(m.mean_ns))
+                        .unwrap_or_default(),
+                );
+            }
+        }
+    }
+
+    // Annotate verification failures
+    for v in &report.verifications {
+        match &v.status {
+            fluxbench_logic::VerificationStatus::Failed => {
+                let level = match v.severity {
+                    fluxbench_core::Severity::Critical => "error",
+                    _ => "warning",
+                };
+                println!("::{}::{}: {}", level, v.id, v.message);
+            }
+            fluxbench_logic::VerificationStatus::Error { message } => {
+                println!("::error::{}: evaluation error: {}", v.id, message);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn resolve_git_ref(git_ref: &str) -> anyhow::Result<String> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--verify", git_ref])
@@ -816,12 +966,15 @@ fn format_comparison_output(
             };
 
             output.push_str(&format!(
-                "    baseline: {:.2} ns → current: {:.2} ns\n",
-                comparison.baseline_mean_ns, metrics.mean_ns
+                "    baseline: {} → current: {}\n",
+                format_duration(comparison.baseline_mean_ns),
+                format_duration(metrics.mean_ns),
             ));
             output.push_str(&format!(
-                "    change: {:+.2}% ({:+.2} ns) {}\n",
-                comparison.relative_change, comparison.absolute_change_ns, change_icon
+                "    change: {:+.2}% ({}) {}\n",
+                comparison.relative_change,
+                format_duration(comparison.absolute_change_ns.abs()),
+                change_icon,
             ));
         }
 
@@ -840,4 +993,183 @@ fn format_comparison_output(
     ));
 
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fluxbench_report::{
+        BenchmarkMetrics, BenchmarkReportResult, BenchmarkStatus, Report, ReportConfig, ReportMeta,
+        ReportSummary, SystemInfo,
+    };
+
+    fn dummy_meta() -> ReportMeta {
+        ReportMeta {
+            schema_version: 1,
+            version: "0.1.0".to_string(),
+            timestamp: chrono::Utc::now(),
+            git_commit: None,
+            git_branch: None,
+            system: SystemInfo {
+                os: "linux".to_string(),
+                os_version: "6.0".to_string(),
+                cpu: "test".to_string(),
+                cpu_cores: 1,
+                memory_gb: 1.0,
+            },
+            config: ReportConfig {
+                warmup_time_ns: 0,
+                measurement_time_ns: 0,
+                min_iterations: None,
+                max_iterations: None,
+                bootstrap_iterations: 0,
+                confidence_level: 0.95,
+                track_allocations: false,
+            },
+        }
+    }
+
+    fn dummy_metrics(mean: f64) -> BenchmarkMetrics {
+        BenchmarkMetrics {
+            samples: 100,
+            mean_ns: mean,
+            median_ns: mean,
+            std_dev_ns: mean * 0.01,
+            min_ns: mean * 0.9,
+            max_ns: mean * 1.1,
+            p50_ns: mean,
+            p90_ns: mean * 1.05,
+            p95_ns: mean * 1.07,
+            p99_ns: mean * 1.09,
+            p999_ns: mean * 1.1,
+            skewness: 0.0,
+            kurtosis: 3.0,
+            ci_lower_ns: mean * 0.98,
+            ci_upper_ns: mean * 1.02,
+            ci_level: 0.95,
+            throughput_ops_sec: None,
+            alloc_bytes: 0,
+            alloc_count: 0,
+            mean_cycles: 0.0,
+            median_cycles: 0.0,
+            min_cycles: 0,
+            max_cycles: 0,
+            cycles_per_ns: 0.0,
+        }
+    }
+
+    fn dummy_result(id: &str, mean: f64, threshold: f64) -> BenchmarkReportResult {
+        BenchmarkReportResult {
+            id: id.to_string(),
+            name: id.to_string(),
+            group: "test".to_string(),
+            status: BenchmarkStatus::Passed,
+            severity: fluxbench_core::Severity::Warning,
+            file: "test.rs".to_string(),
+            line: 1,
+            metrics: Some(dummy_metrics(mean)),
+            threshold,
+            comparison: None,
+            failure: None,
+        }
+    }
+
+    fn dummy_report(results: Vec<BenchmarkReportResult>) -> Report {
+        let total = results.len();
+        Report {
+            meta: dummy_meta(),
+            results,
+            comparisons: vec![],
+            comparison_series: vec![],
+            synthetics: vec![],
+            verifications: vec![],
+            summary: ReportSummary {
+                total_benchmarks: total,
+                passed: total,
+                ..Default::default()
+            },
+            baseline_meta: None,
+        }
+    }
+
+    #[test]
+    fn per_bench_threshold_overrides_global() {
+        // Baseline: 100ns. Current: 108ns → 8% regression.
+        // Global threshold: 25%. Per-bench threshold: 5%.
+        // Should detect regression via per-bench threshold but not global.
+        let mut report = dummy_report(vec![dummy_result("fast_bench", 108.0, 5.0)]);
+        let baseline = dummy_report(vec![dummy_result("fast_bench", 100.0, 5.0)]);
+
+        apply_baseline_comparison(&mut report, &baseline, 25.0);
+
+        assert_eq!(
+            report.summary.regressions, 1,
+            "per-bench 5% should catch 8% regression"
+        );
+        let cmp = report.results[0].comparison.as_ref().unwrap();
+        assert!(cmp.is_significant);
+    }
+
+    #[test]
+    fn zero_threshold_falls_back_to_global() {
+        // Baseline: 100ns. Current: 108ns → 8% regression.
+        // Global threshold: 25%. Per-bench threshold: 0.0 (use global).
+        // 8% < 25%, so no regression.
+        let mut report = dummy_report(vec![dummy_result("normal_bench", 108.0, 0.0)]);
+        let baseline = dummy_report(vec![dummy_result("normal_bench", 100.0, 0.0)]);
+
+        apply_baseline_comparison(&mut report, &baseline, 25.0);
+
+        assert_eq!(
+            report.summary.regressions, 0,
+            "8% under 25% global should not regress"
+        );
+        let cmp = report.results[0].comparison.as_ref().unwrap();
+        assert!(!cmp.is_significant);
+    }
+
+    #[test]
+    fn mixed_thresholds_independent() {
+        // Two benchmarks: one with tight per-bench threshold, one using global.
+        // Both regress by 8%.
+        let mut report = dummy_report(vec![
+            dummy_result("tight", 108.0, 5.0), // per-bench 5% → should regress
+            dummy_result("loose", 108.0, 0.0), // global 25% → should not
+        ]);
+        let baseline = dummy_report(vec![
+            dummy_result("tight", 100.0, 5.0),
+            dummy_result("loose", 100.0, 0.0),
+        ]);
+
+        apply_baseline_comparison(&mut report, &baseline, 25.0);
+
+        assert_eq!(report.summary.regressions, 1);
+        assert!(
+            report.results[0]
+                .comparison
+                .as_ref()
+                .unwrap()
+                .is_significant
+        );
+        assert!(
+            !report.results[1]
+                .comparison
+                .as_ref()
+                .unwrap()
+                .is_significant
+        );
+    }
+
+    #[test]
+    fn per_bench_threshold_detects_improvement() {
+        // Baseline: 100ns. Current: 90ns → -10% improvement.
+        // Per-bench threshold: 5%.
+        let mut report = dummy_report(vec![dummy_result("improving", 90.0, 5.0)]);
+        let baseline = dummy_report(vec![dummy_result("improving", 100.0, 5.0)]);
+
+        apply_baseline_comparison(&mut report, &baseline, 25.0);
+
+        assert_eq!(report.summary.improvements, 1);
+        assert_eq!(report.summary.regressions, 0);
+    }
 }

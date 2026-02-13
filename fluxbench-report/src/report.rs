@@ -66,7 +66,7 @@ pub struct ComparisonSeries {
     pub x_values: Vec<String>,
     /// Competitor/series names (benchmark IDs)
     pub series_names: Vec<String>,
-    /// Data points: series_data[series_idx][x_idx] = value
+    /// Data points: `series_data[series_idx][x_idx] = value`
     pub series_data: Vec<Vec<f64>>,
     /// Metric used
     pub metric: String,
@@ -144,6 +144,9 @@ pub struct BenchmarkReportResult {
     pub line: u32,
     /// Timing and statistical metrics (if successful)
     pub metrics: Option<BenchmarkMetrics>,
+    /// Per-benchmark regression threshold percentage (0.0 = use global)
+    #[serde(default)]
+    pub threshold: f64,
     /// Comparison results against baseline (if applicable)
     pub comparison: Option<Comparison>,
     /// Failure details (if failed)
