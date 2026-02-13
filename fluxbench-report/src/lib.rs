@@ -14,7 +14,7 @@ mod json;
 mod report;
 
 pub use csv::generate_csv_report;
-pub use github::generate_github_summary;
+pub use github::{format_duration, generate_github_summary};
 pub use html::generate_html_report;
 pub use json::{ReportSchema, generate_json_report};
 pub use report::{

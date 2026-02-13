@@ -213,7 +213,8 @@ fn write_verifications(output: &mut String, verifications: &[VerificationResult]
     output.push('\n');
 }
 
-fn format_duration(ns: f64) -> String {
+/// Format a duration in nanoseconds to a human-readable string (ns/us/ms/s).
+pub fn format_duration(ns: f64) -> String {
     if ns < 1_000.0 {
         format!("{:.0} ns", ns)
     } else if ns < 1_000_000.0 {
