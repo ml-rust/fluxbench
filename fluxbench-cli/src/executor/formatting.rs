@@ -10,7 +10,7 @@
 //! - Comparison tables with speedup calculations
 //! - Verification results summary
 
-use fluxbench_report::{BenchmarkReportResult, BenchmarkStatus, Report};
+use fluxbench_report::{BenchmarkReportResult, BenchmarkStatus, Report, format_duration};
 
 /// Format a report for human-readable terminal display
 ///
@@ -51,20 +51,27 @@ pub fn format_human_output(report: &Report) -> String {
 
             if let Some(metrics) = &result.metrics {
                 output.push_str(&format!(
-                    "      mean: {:.2} ns  median: {:.2} ns  stddev: {:.2} ns\n",
-                    metrics.mean_ns, metrics.median_ns, metrics.std_dev_ns
+                    "      mean: {}  median: {}  stddev: {}\n",
+                    format_duration(metrics.mean_ns),
+                    format_duration(metrics.median_ns),
+                    format_duration(metrics.std_dev_ns),
                 ));
                 output.push_str(&format!(
-                    "      min: {:.2} ns  max: {:.2} ns  samples: {}\n",
-                    metrics.min_ns, metrics.max_ns, metrics.samples
+                    "      min: {}  max: {}  samples: {}\n",
+                    format_duration(metrics.min_ns),
+                    format_duration(metrics.max_ns),
+                    metrics.samples,
                 ));
                 output.push_str(&format!(
-                    "      p50: {:.2} ns  p95: {:.2} ns  p99: {:.2} ns\n",
-                    metrics.p50_ns, metrics.p95_ns, metrics.p99_ns
+                    "      p50: {}  p95: {}  p99: {}\n",
+                    format_duration(metrics.p50_ns),
+                    format_duration(metrics.p95_ns),
+                    format_duration(metrics.p99_ns),
                 ));
                 output.push_str(&format!(
-                    "      95% CI: [{:.2}, {:.2}] ns\n",
-                    metrics.ci_lower_ns, metrics.ci_upper_ns
+                    "      95% CI: [{}, {}]\n",
+                    format_duration(metrics.ci_lower_ns),
+                    format_duration(metrics.ci_upper_ns),
                 ));
                 if let Some(throughput) = metrics.throughput_ops_sec {
                     output.push_str(&format!("      throughput: {:.2} ops/sec\n", throughput));
@@ -133,9 +140,9 @@ pub fn format_human_output(report: &Report) -> String {
             };
 
             output.push_str(&format!(
-                "  {:<width$}  {:>12.2}  {:>10}{}\n",
+                "  {:<width$}  {:>12}  {:>10}{}\n",
                 entry.benchmark_id,
-                entry.value,
+                format_duration(entry.value),
                 speedup_str,
                 baseline_marker,
                 width = max_name_len
