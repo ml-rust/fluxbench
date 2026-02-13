@@ -601,6 +601,9 @@ fn compare_benchmarks(
     let total_duration_ms = start_time.elapsed().as_secs_f64() * 1000.0;
     let mut report = build_report(&results, &stats, &exec_config, total_duration_ms);
 
+    // Store baseline metadata for summary header
+    report.baseline_meta = Some(baseline.meta.clone());
+
     // Add comparison data
     let regression_threshold = cli.threshold.unwrap_or(config.ci.regression_threshold);
     let baseline_map: std::collections::HashMap<_, _> = baseline

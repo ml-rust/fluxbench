@@ -21,6 +21,9 @@ pub struct Report {
     pub verifications: Vec<fluxbench_logic::VerificationResult>,
     /// Overall report summary statistics
     pub summary: ReportSummary,
+    /// Baseline report metadata (populated when comparing against a baseline)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline_meta: Option<ReportMeta>,
 }
 
 /// Result of a comparison group

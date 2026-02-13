@@ -166,5 +166,6 @@ pub fn build_report(
         synthetics: Vec::new(),        // Filled by execute_verifications
         verifications: Vec::new(),     // Filled by execute_verifications
         summary,
+        baseline_meta: None,
     }
 }

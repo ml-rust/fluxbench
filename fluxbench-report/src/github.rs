@@ -3,7 +3,7 @@
 //! Generates Markdown tables for $GITHUB_STEP_SUMMARY.
 
 use crate::report::{BenchmarkStatus, Report, ReportSummary};
-use fluxbench_logic::{VerificationResult, VerificationStatus};
+use fluxbench_logic::{ResolvedMetric, VerificationResult, VerificationStatus};
 
 /// Generate GitHub-compatible Markdown summary
 pub fn generate_github_summary(report: &Report) -> String {
@@ -11,18 +11,37 @@ pub fn generate_github_summary(report: &Report) -> String {
 
     // Header
     output.push_str("## FluxBench Results\n\n");
-    output.push_str(&format!(
-        "**Commit:** `{}` | **Branch:** `{}` | **Date:** {}\n\n",
-        report.meta.git_commit.as_deref().unwrap_or("unknown"),
-        report.meta.git_branch.as_deref().unwrap_or("unknown"),
-        report.meta.timestamp.format("%Y-%m-%d %H:%M UTC"),
-    ));
+    if let Some(ref baseline) = report.baseline_meta {
+        output.push_str(&format!(
+            "**Comparing:** `{}` (`{}`) → `{}` (`{}`)\n",
+            report.meta.git_branch.as_deref().unwrap_or("unknown"),
+            abbreviate_commit(report.meta.git_commit.as_deref()),
+            baseline.git_branch.as_deref().unwrap_or("unknown"),
+            abbreviate_commit(baseline.git_commit.as_deref()),
+        ));
+        output.push_str(&format!(
+            "**Date:** {}\n\n",
+            report.meta.timestamp.format("%Y-%m-%d %H:%M UTC"),
+        ));
+    } else {
+        output.push_str(&format!(
+            "**Commit:** `{}` | **Branch:** `{}` | **Date:** {}\n\n",
+            report.meta.git_commit.as_deref().unwrap_or("unknown"),
+            report.meta.git_branch.as_deref().unwrap_or("unknown"),
+            report.meta.timestamp.format("%Y-%m-%d %H:%M UTC"),
+        ));
+    }
 
     // Summary table
     write_summary_table(&mut output, &report.summary);
 
-    // Critical benchmarks
-    write_critical_benchmarks(&mut output, report);
+    // Baseline comparison (when comparing against a baseline)
+    write_baseline_comparison(&mut output, report);
+
+    // Critical benchmarks (only shown without baseline, since baseline comparison covers it)
+    if report.baseline_meta.is_none() {
+        write_critical_benchmarks(&mut output, report);
+    }
 
     // Verifications
     write_verifications(&mut output, &report.verifications);
@@ -47,6 +66,56 @@ fn write_summary_table(output: &mut String, summary: &ReportSummary) {
     output.push_str(&format!("| Skipped | {} |\n", summary.skipped));
     output.push_str(&format!("| Regressions | {} |\n", summary.regressions));
     output.push_str(&format!("| Improvements | {} |\n", summary.improvements));
+    output.push('\n');
+}
+
+fn write_baseline_comparison(output: &mut String, report: &Report) {
+    // Only show when we have baseline data
+    let has_comparisons = report.results.iter().any(|r| r.comparison.is_some());
+    if !has_comparisons {
+        return;
+    }
+
+    let baseline_branch = report
+        .baseline_meta
+        .as_ref()
+        .and_then(|m| m.git_branch.as_deref())
+        .unwrap_or("baseline");
+    let current_branch = report.meta.git_branch.as_deref().unwrap_or("current");
+
+    output.push_str("### Baseline Comparison\n\n");
+    output.push_str(&format!(
+        "| Benchmark | {} | {} | Change | Status |\n",
+        current_branch, baseline_branch
+    ));
+    output.push_str("|-----------|------|----------|--------|--------|\n");
+
+    for result in &report.results {
+        let current = result
+            .metrics
+            .as_ref()
+            .map(|m| format_duration(m.mean_ns))
+            .unwrap_or_else(|| "-".to_string());
+
+        if let Some(ref cmp) = result.comparison {
+            let baseline = format_duration(cmp.baseline_mean_ns);
+            let change = format_change(cmp.relative_change);
+            let status = if cmp.relative_change.abs() < 1.0 {
+                "stable"
+            } else if cmp.is_significant && cmp.relative_change > 0.0 {
+                "REGRESSION"
+            } else if cmp.is_significant && cmp.relative_change < 0.0 {
+                "improved"
+            } else {
+                "within noise"
+            };
+
+            output.push_str(&format!(
+                "| `{}` | {} | {} | {} | {} |\n",
+                result.id, current, baseline, change, status
+            ));
+        }
+    }
     output.push('\n');
 }
 
@@ -115,21 +184,30 @@ fn write_verifications(output: &mut String, verifications: &[VerificationResult]
         };
 
         let result = match &v.status {
-            VerificationStatus::Passed | VerificationStatus::Failed => v
-                .actual_value
-                .map(|val| format!("{:.2}", val))
-                .unwrap_or_default(),
+            VerificationStatus::Passed | VerificationStatus::Failed => {
+                if v.resolved_metrics.is_empty() {
+                    icon.to_string()
+                } else {
+                    v.resolved_metrics
+                        .iter()
+                        .map(|m| {
+                            let formatted = format_metric_value(m.value, m.unit.as_deref());
+                            format!("{} = {}", m.name, formatted)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            }
             VerificationStatus::Skipped { missing_metrics } => {
-                format!("skipped: {} unavailable", missing_metrics)
+                format!("{} unavailable", missing_metrics)
             }
-            VerificationStatus::Error { message } => {
-                format!("error: {}", message)
-            }
+            VerificationStatus::Error { message } => message.clone(),
         };
 
+        let expression = format_expression(&v.expression, &v.resolved_metrics);
         output.push_str(&format!(
             "| {} {} | `{}` | {} |\n",
-            icon, v.id, v.expression, result
+            icon, v.id, expression, result
         ));
     }
     output.push('\n');
@@ -147,6 +225,139 @@ fn format_duration(ns: f64) -> String {
     }
 }
 
+/// Abbreviate a git commit hash to 7 characters.
+///
+/// Git commit hashes are always ASCII hex, so byte slicing is safe here.
+/// Includes a debug assertion to catch misuse with non-ASCII input.
+fn abbreviate_commit(commit: Option<&str>) -> &str {
+    match commit {
+        Some(c) if c.len() > 7 => {
+            debug_assert!(c.is_char_boundary(7), "commit hash contains non-ASCII");
+            &c[..7]
+        }
+        Some(c) => c,
+        None => "unknown",
+    }
+}
+
+/// Format a metric value using its unit. If unit is None, assume nanoseconds.
+fn format_metric_value(value: f64, unit: Option<&str>) -> String {
+    if !value.is_finite() {
+        return match unit {
+            None | Some("ns") => format!("{}", value),
+            Some(u) => format!("{} {}", value, u),
+        };
+    }
+    match unit {
+        None | Some("ns") => format_duration(value),
+        Some(u) => format_scaled_value(value, u),
+    }
+}
+
+/// Format a non-time value with appropriate SI scaling and unit suffix.
+fn format_scaled_value(value: f64, unit: &str) -> String {
+    let abs = value.abs();
+    if abs >= 1_000_000.0 {
+        format!("{:.2}M {}", value / 1_000_000.0, unit)
+    } else if abs >= 1_000.0 {
+        format!("{:.1}K {}", value / 1_000.0, unit)
+    } else if value.fract() == 0.0 {
+        format!("{:.0} {}", value, unit)
+    } else {
+        format!("{:.2} {}", value, unit)
+    }
+}
+
+/// Format a verification expression with human-readable numeric literals.
+///
+/// Finds the nearest preceding variable for each numeric literal and uses that
+/// variable's unit to determine formatting. This correctly handles mixed-unit
+/// expressions like `rps > 200000 && latency < 5000`.
+///
+/// Supports integer, decimal, and scientific notation literals (e.g., `1e9`, `1.5E-3`).
+fn format_expression(expression: &str, resolved: &[ResolvedMetric]) -> String {
+    // Build a lookup from variable name → unit
+    let unit_map: std::collections::HashMap<&str, Option<&str>> = resolved
+        .iter()
+        .map(|m| (m.name.as_str(), m.unit.as_deref()))
+        .collect();
+
+    let chars: Vec<char> = expression.chars().collect();
+    let len = chars.len();
+    let mut result = String::with_capacity(expression.len());
+    let mut i = 0;
+    // Track the most recently seen variable name to infer unit for adjacent literals
+    let mut last_variable_unit: Option<&str> = None;
+
+    while i < len {
+        // Try to parse an identifier
+        if chars[i].is_alphabetic() || chars[i] == '_' {
+            let start = i;
+            while i < len && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let ident: String = chars[start..i].iter().collect();
+            // Update last seen variable's unit if it's in our map
+            if let Some(&unit) = unit_map.get(ident.as_str()) {
+                last_variable_unit = unit;
+            }
+            result.push_str(&ident);
+            continue;
+        }
+
+        // Try to parse a numeric literal (integer, decimal, or scientific notation)
+        if chars[i].is_ascii_digit() {
+            let start = i;
+            // Integer part
+            while i < len && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            // Optional fractional part
+            if i < len && chars[i] == '.' && i + 1 < len && chars[i + 1].is_ascii_digit() {
+                i += 1;
+                while i < len && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            // Optional exponent (e.g., e9, E-3, e+10)
+            if i < len && (chars[i] == 'e' || chars[i] == 'E') {
+                let exp_start = i;
+                i += 1;
+                if i < len && (chars[i] == '+' || chars[i] == '-') {
+                    i += 1;
+                }
+                if i < len && chars[i].is_ascii_digit() {
+                    while i < len && chars[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                } else {
+                    // Not a valid exponent, backtrack
+                    i = exp_start;
+                }
+            }
+            // If followed by an identifier char, it's part of a token (e.g., variable name)
+            if i < len && (chars[i].is_alphabetic() || chars[i] == '_') {
+                let num_str: String = chars[start..i].iter().collect();
+                result.push_str(&num_str);
+                continue;
+            }
+            let num_str: String = chars[start..i].iter().collect();
+            if let Ok(val) = num_str.parse::<f64>() {
+                result.push_str(&format_metric_value(val, last_variable_unit));
+            } else {
+                result.push_str(&num_str);
+            }
+            continue;
+        }
+
+        // Any other character (operators, spaces, parens)
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    result
+}
+
 fn format_change(pct: f64) -> String {
     if pct.abs() < 1.0 {
         "stable".to_string()
@@ -154,5 +365,205 @@ fn format_change(pct: f64) -> String {
         format!("{:.1}%", pct)
     } else {
         format!("+{:.1}%", pct)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_resolved(name: &str, value: f64, unit: Option<&str>) -> ResolvedMetric {
+        ResolvedMetric {
+            name: name.to_string(),
+            value,
+            unit: unit.map(|u| u.to_string()),
+        }
+    }
+
+    // --- abbreviate_commit ---
+
+    #[test]
+    fn test_abbreviate_commit_long() {
+        assert_eq!(abbreviate_commit(Some("abc1234def5678")), "abc1234");
+    }
+
+    #[test]
+    fn test_abbreviate_commit_short() {
+        assert_eq!(abbreviate_commit(Some("abc")), "abc");
+    }
+
+    #[test]
+    fn test_abbreviate_commit_exactly_7() {
+        assert_eq!(abbreviate_commit(Some("abc1234")), "abc1234");
+    }
+
+    #[test]
+    fn test_abbreviate_commit_none() {
+        assert_eq!(abbreviate_commit(None), "unknown");
+    }
+
+    // --- format_metric_value ---
+
+    #[test]
+    fn test_format_metric_value_ns() {
+        assert_eq!(format_metric_value(500.0, None), "500 ns");
+        assert_eq!(format_metric_value(5000.0, None), "5.0 us");
+        assert_eq!(format_metric_value(5000.0, Some("ns")), "5.0 us");
+    }
+
+    #[test]
+    fn test_format_metric_value_custom_unit_scales() {
+        assert_eq!(
+            format_metric_value(200_000.0, Some("req/s")),
+            "200.0K req/s"
+        );
+        assert_eq!(
+            format_metric_value(3_380_000.0, Some("req/s")),
+            "3.38M req/s"
+        );
+        assert_eq!(format_metric_value(42.0, Some("MB/s")), "42 MB/s");
+        assert_eq!(format_metric_value(1.55, Some("ops")), "1.55 ops");
+    }
+
+    #[test]
+    fn test_format_metric_value_non_finite() {
+        assert_eq!(
+            format_metric_value(f64::INFINITY, Some("req/s")),
+            "inf req/s"
+        );
+        assert_eq!(
+            format_metric_value(f64::NEG_INFINITY, Some("ops")),
+            "-inf ops"
+        );
+        assert_eq!(format_metric_value(f64::INFINITY, None), "inf");
+        assert_eq!(format_metric_value(f64::NAN, None), "NaN");
+    }
+
+    // --- format_expression ---
+
+    #[test]
+    fn test_format_expression_ns_unit() {
+        let resolved = vec![make_resolved("latency", 300.0, None)];
+        assert_eq!(
+            format_expression("latency < 5000", &resolved),
+            "latency < 5.0 us"
+        );
+    }
+
+    #[test]
+    fn test_format_expression_custom_unit() {
+        let resolved = vec![make_resolved("rps", 3_000_000.0, Some("req/s"))];
+        assert_eq!(
+            format_expression("rps > 200000", &resolved),
+            "rps > 200.0K req/s"
+        );
+    }
+
+    #[test]
+    fn test_format_expression_mixed_units() {
+        // "rps > 200000 && latency < 5000" with rps=req/s and latency=ns
+        let resolved = vec![
+            make_resolved("rps", 3_000_000.0, Some("req/s")),
+            make_resolved("latency", 300.0, None),
+        ];
+        let result = format_expression("rps > 200000 && latency < 5000", &resolved);
+        assert!(result.contains("200.0K req/s"), "got: {}", result);
+        assert!(result.contains("5.0 us"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_format_expression_scientific_notation() {
+        let resolved = vec![make_resolved("throughput", 2e9, Some("ops/s"))];
+        assert_eq!(
+            format_expression("throughput > 1e9", &resolved),
+            "throughput > 1000.00M ops/s"
+        );
+    }
+
+    #[test]
+    fn test_format_expression_scientific_notation_with_sign() {
+        let resolved = vec![make_resolved("x", 0.001, None)];
+        assert_eq!(
+            format_expression("x < 1.5E-3", &resolved),
+            // 0.0015 ns → "0 ns" (sub-nanosecond rounds to 0)
+            "x < 0 ns"
+        );
+    }
+
+    #[test]
+    fn test_format_expression_no_literals() {
+        let resolved = vec![make_resolved("a", 1.0, None), make_resolved("b", 2.0, None)];
+        assert_eq!(format_expression("a < b", &resolved), "a < b");
+    }
+
+    #[test]
+    fn test_format_expression_empty() {
+        assert_eq!(format_expression("", &[]), "");
+    }
+
+    #[test]
+    fn test_format_expression_identifiers_with_digits() {
+        // Ensure "var2" isn't parsed as "var" + "2"
+        let resolved = vec![make_resolved("var2", 100.0, None)];
+        assert_eq!(format_expression("var2 < 5000", &resolved), "var2 < 5.0 us");
+    }
+
+    // --- format_scaled_value ---
+
+    #[test]
+    fn test_format_scaled_value_small() {
+        assert_eq!(format_scaled_value(42.0, "ops"), "42 ops");
+        assert_eq!(format_scaled_value(2.75, "x"), "2.75 x");
+    }
+
+    #[test]
+    fn test_format_scaled_value_thousands() {
+        assert_eq!(format_scaled_value(1500.0, "req/s"), "1.5K req/s");
+    }
+
+    #[test]
+    fn test_format_scaled_value_millions() {
+        assert_eq!(format_scaled_value(2_500_000.0, "ops"), "2.50M ops");
+    }
+
+    // --- write_baseline_comparison ---
+
+    #[test]
+    fn test_write_baseline_comparison_empty_results() {
+        let report = Report {
+            meta: crate::report::ReportMeta {
+                schema_version: 1,
+                version: "0.1.0".to_string(),
+                timestamp: chrono::Utc::now(),
+                git_commit: None,
+                git_branch: None,
+                system: crate::report::SystemInfo {
+                    os: "linux".to_string(),
+                    os_version: "6.0".to_string(),
+                    cpu: "test".to_string(),
+                    cpu_cores: 1,
+                    memory_gb: 1.0,
+                },
+                config: crate::report::ReportConfig {
+                    warmup_time_ns: 0,
+                    measurement_time_ns: 0,
+                    min_iterations: None,
+                    max_iterations: None,
+                    bootstrap_iterations: 0,
+                    confidence_level: 0.95,
+                    track_allocations: false,
+                },
+            },
+            results: vec![],
+            comparisons: vec![],
+            comparison_series: vec![],
+            synthetics: vec![],
+            verifications: vec![],
+            summary: Default::default(),
+            baseline_meta: None,
+        };
+        let mut output = String::new();
+        write_baseline_comparison(&mut output, &report);
+        assert!(output.is_empty());
     }
 }
