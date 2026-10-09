@@ -14,6 +14,8 @@ mod html;
 mod json;
 mod metric;
 mod report;
+#[cfg(test)]
+mod test_fixtures;
 
 pub use csv::generate_csv_report;
 pub use github::{
