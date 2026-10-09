@@ -44,6 +44,7 @@ pub struct WorkerHandle {
     capabilities: Option<WorkerCapabilities>,
     timeout: Duration,
     /// Duplicate of the read fd for `poll(2)` on Unix. -1 elsewhere.
+    #[cfg_attr(not(unix), allow(dead_code))]
     poll_fd: i32,
 }
 
