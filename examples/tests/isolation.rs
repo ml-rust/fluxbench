@@ -6,56 +6,17 @@
 
 #![cfg(unix)]
 
+mod common;
+
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
 /// Path of the `test_isolation` example binary.
-///
-/// `cargo test` builds examples next to `deps/`. If it is missing, build it once.
 fn fixture_binary() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
-    BINARY.get_or_init(|| {
-        let exe = std::env::current_exe().expect("test binary path");
-        let profile_dir = exe
-            .parent()
-            .and_then(Path::parent)
-            .expect("test binary sits in <target>/<profile>/deps");
-        let built = profile_dir.join("examples").join("test_isolation");
-        if built.exists() {
-            return built;
-        }
-
-        let release = profile_dir.file_name().is_some_and(|n| n == "release");
-        let target_dir = profile_dir
-            .parent()
-            .expect("profile dir has a parent")
-            .join("isolation-fixture");
-        let mut cargo = Command::new(env!("CARGO"));
-        cargo
-            .args([
-                "build",
-                "--example",
-                "test_isolation",
-                "-p",
-                "fluxbench-examples",
-            ])
-            .arg("--target-dir")
-            .arg(&target_dir);
-        if release {
-            cargo.arg("--release");
-        }
-        let status = cargo.status().expect("cargo runs");
-        assert!(
-            status.success(),
-            "building the test_isolation example failed"
-        );
-        target_dir
-            .join(if release { "release" } else { "debug" })
-            .join("examples")
-            .join("test_isolation")
-    })
+    BINARY.get_or_init(|| common::example_binary("test_isolation"))
 }
 
 /// Run the fixture with `extra` flags. Returns the parsed JSON report.

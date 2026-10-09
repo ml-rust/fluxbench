@@ -220,7 +220,7 @@ struct P99Check;
 
 **Severity Levels:**
 
-- `critical`: Fails the benchmark suite (exit code 1)
+- `critical`: Fails the benchmark suite (exit code 1) while `ci.fail_on_critical` is on, the default
 - `warning`: Reported but doesn't fail
 - `info`: Informational only
 
@@ -359,7 +359,10 @@ cargo bench -- --format csv --output results.csv
 cargo bench -- --format github-summary         # GitHub Actions summary
 
 # Baseline comparison
-cargo bench -- --baseline previous_results.json
+cargo bench -- --save-baseline main.json       # Save results plus raw samples
+cargo bench -- --baseline main.json            # Compare against a saved baseline
+cargo bench -- --baseline main.json --threshold 10
+cargo bench -- compare origin/main             # Baseline must be saved at that commit
 
 # Dry run
 cargo bench -- --dry-run
@@ -414,10 +417,32 @@ save_baseline = false               # Save a JSON baseline after each run (defau
 
 ```toml
 [ci]
-regression_threshold = 5.0   # Fail CI if regression exceeds this percentage (default: 5.0)
+regression_threshold = 5.0   # A significant slowdown above this percentage is a regression (default: 5.0)
 github_annotations = true    # Emit ::warning and ::error annotations on PRs (default: false)
-fail_on_critical = true      # Exit non-zero on critical verification failures (default: true)
+fail_on_critical = true      # Exit non-zero on critical verification failures and critical regressions (default: true)
 ```
+
+#### Regression detection
+
+`--baseline` and `compare <REF>` compare each benchmark with its baseline entry.
+
+- A change counts only when both hold:
+  - It is statistically significant: the difference CI excludes zero, or the probability of its direction reaches `runner.confidence_level`.
+  - Its size exceeds the threshold: `#[bench(threshold = ...)]` if above 0, else `--threshold`, else `regression_threshold`.
+- Improvements follow the same rule in the other direction.
+- Statistics:
+  - Saved baselines (schema 2) carry raw samples. Both runs' samples are bootstrapped for the probability, the difference CI, and Cohen's d.
+  - Schema 1 baselines, or `bootstrap_iterations = 0`, fall back to a Welch-style z test on mean, std dev, and sample count.
+- Exit status, for the default run and `compare` alike:
+
+| Finding | `fail_on_critical = true` | `fail_on_critical = false` |
+| --- | --- | --- |
+| Crashed benchmark | exit 1 | exit 1 |
+| Critical verification failure | exit 1 | warning |
+| Regression on a `severity = "critical"` benchmark | exit 1 | warning |
+| Regression on a `warning` or `info` benchmark | warning | warning |
+
+A missing `--baseline` file prints a warning and runs without a comparison. An unreadable or invalid baseline file, or one with a newer schema, is an error. `compare <REF>` requires the baseline file and checks that its commit matches `REF`. `compare` uses the same executor as a normal run: isolation, `--jobs`, and CPU pinning apply.
 
 ## Output Formats
 
@@ -601,6 +626,7 @@ The `examples/` crate contains runnable demos for each feature:
 | `library_bench`       | Benchmarking a library crate              |
 | `ci_regression`       | CI regression detection workflow          |
 | `test_isolation`      | Fixtures for the isolation tests: panic, abort, SIGSEGV, timeout |
+| `test_baseline`       | Fixtures for the baseline tests: `FLUX_TEST_SLOWDOWN` slows a critical benchmark |
 
 ```bash
 cargo run -p fluxbench-examples --example feature_iteration --release

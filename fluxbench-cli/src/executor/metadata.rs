@@ -45,7 +45,7 @@ pub fn build_report_meta(exec_config: &ExecutionConfig) -> ReportMeta {
     };
 
     ReportMeta {
-        schema_version: 1,
+        schema_version: fluxbench_report::REPORT_SCHEMA_VERSION,
         version: env!("CARGO_PKG_VERSION").to_string(),
         timestamp: Utc::now(),
         git_commit,

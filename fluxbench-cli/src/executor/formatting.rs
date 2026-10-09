@@ -287,7 +287,7 @@ pub fn format_human_output(report: &Report) -> String {
 /// Label for a confidence interval at `level`, e.g. `95% CI` or `99.5% CI`.
 ///
 /// Whole percentages print without decimals. Others print one decimal.
-fn ci_label(level: f64) -> String {
+pub(crate) fn ci_label(level: f64) -> String {
     let pct = level * 100.0;
     if (pct - pct.round()).abs() < 1e-9 {
         format!("{:.0}% CI", pct)

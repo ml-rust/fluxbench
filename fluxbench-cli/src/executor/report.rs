@@ -163,6 +163,7 @@ pub fn build_report(
             threshold: result.threshold,
             comparison: None, // Filled when comparing to baseline
             failure,
+            samples: None, // Filled only when saving a baseline
         });
     }
 

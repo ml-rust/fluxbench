@@ -67,5 +67,5 @@ save_baseline = false
 regression_threshold = 25.0
 # Emit GitHub Actions annotations (::warning, ::error) (default: false)
 github_annotations = true
-# Exit non-zero on critical verification failures (default: true)
+# Exit non-zero on critical verification failures and critical-benchmark regressions (default: true)
 fail_on_critical = true

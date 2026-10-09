@@ -53,7 +53,9 @@ mod statistics;
 mod verification;
 
 // Re-export public API
+pub(crate) use execution::BenchExecutionResult;
 pub use execution::{ExecutionConfig, Executor};
+pub(crate) use formatting::ci_label;
 pub use formatting::format_human_output;
 pub use isolated::IsolatedExecutor;
 pub use report::build_report;

@@ -40,6 +40,9 @@ name = "ci_regression"
 [[example]]
 name = "test_isolation"
 
+[[example]]
+name = "test_baseline"
+
 [dev-dependencies]
 serde_json.workspace = true
 

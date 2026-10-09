@@ -222,13 +222,15 @@ fn default_output_dir() -> String {
 /// CI/CD configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CiConfig {
-    /// Regression threshold percentage (fail if exceeded)
+    /// Regression threshold percentage.
+    /// A statistically significant slowdown above it counts as a regression.
     #[serde(default = "default_threshold")]
     pub regression_threshold: f64,
     /// Enable GitHub Actions annotations
     #[serde(default)]
     pub github_annotations: bool,
-    /// Fail on any critical verification failure
+    /// Exit non-zero on a critical verification failure,
+    /// or on a regression of a `severity = "critical"` benchmark
     #[serde(default = "default_fail_on_critical")]
     pub fail_on_critical: bool,
 }
@@ -330,11 +332,11 @@ width = 1280
 height = 720
 
 [ci]
-# Regression threshold percentage (fail CI if exceeded)
+# Regression threshold percentage: a significant slowdown above it is a regression
 regression_threshold = 5.0
 # Enable GitHub Actions annotations
 github_annotations = false
-# Fail on critical verification failures
+# Fail on critical verification failures and critical-benchmark regressions
 fail_on_critical = true
 "#
         .to_string()

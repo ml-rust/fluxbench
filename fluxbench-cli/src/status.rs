@@ -78,23 +78,28 @@ pub(crate) fn write_github_annotations(out: &mut impl Write, report: &Report) ->
             _ => {}
         }
 
-        if let Some(cmp) = &result.comparison {
-            if cmp.is_significant && cmp.relative_change > 0.0 {
-                writeln!(
-                    out,
-                    "::error file={},line={}::{}: regression {:+.1}% ({} → {})",
-                    result.file,
-                    result.line,
-                    result.id,
-                    cmp.relative_change,
-                    format_duration(cmp.baseline_mean_ns),
-                    result
-                        .metrics
-                        .as_ref()
-                        .map(|m| format_duration(m.mean_ns))
-                        .unwrap_or_default(),
-                )?;
-            }
+        if let Some(cmp) = result.comparison.as_ref().filter(|c| c.is_regression()) {
+            // Only a critical regression can fail CI, so only it is an error.
+            let level = match result.severity {
+                fluxbench_core::Severity::Critical => "error",
+                _ => "warning",
+            };
+            writeln!(
+                out,
+                "::{} file={},line={}::{}: regression {:+.1}% over {}% threshold ({} → {})",
+                level,
+                result.file,
+                result.line,
+                result.id,
+                cmp.relative_change,
+                cmp.threshold,
+                format_duration(cmp.baseline_mean_ns),
+                result
+                    .metrics
+                    .as_ref()
+                    .map(|m| format_duration(m.mean_ns))
+                    .unwrap_or_default(),
+            )?;
         }
     }
 
@@ -160,6 +165,40 @@ mod tests {
         let text = warnings(4, Some(2));
         assert!(text.contains("perturb"));
         assert!(text.contains("share cores"));
+    }
+
+    #[test]
+    fn regression_annotation_level_follows_severity() {
+        use crate::test_support::{dummy_report, dummy_result};
+        use fluxbench_core::Severity;
+        use fluxbench_report::{Comparison, ComparisonMethod};
+
+        let annotate = |severity: Severity| {
+            let mut result = dummy_result("b", 110.0, 0.0);
+            result.severity = severity;
+            result.comparison = Some(Comparison {
+                baseline_mean_ns: 100.0,
+                absolute_change_ns: 10.0,
+                relative_change: 10.0,
+                probability_regression: 0.999,
+                is_significant: true,
+                effect_size: 3.0,
+                threshold: 5.0,
+                difference_ci_lower_ns: Some(8.0),
+                difference_ci_upper_ns: Some(12.0),
+                confidence_level: 0.95,
+                method: ComparisonMethod::Summary,
+            });
+            let mut buf = Vec::new();
+            write_github_annotations(&mut buf, &dummy_report(vec![result])).unwrap();
+            String::from_utf8(buf).unwrap()
+        };
+
+        let critical = annotate(Severity::Critical);
+        let expected = "::error file=test.rs,line=1::b: regression +10.0% over 5% threshold";
+        assert!(critical.starts_with(expected), "{critical}");
+        let warning = annotate(Severity::Warning);
+        assert!(warning.starts_with("::warning file="), "{warning}");
     }
 
     #[test]
