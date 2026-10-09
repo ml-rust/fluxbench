@@ -6,6 +6,7 @@
 
 mod context;
 mod graph;
+mod margin;
 mod synthetic;
 mod verification;
 
@@ -26,7 +27,7 @@ pub struct VerifyDef {
     pub expression: &'static str,
     /// Severity level
     pub severity: Severity,
-    /// Tolerance margin for float comparison
+    /// Percent tolerance around the single top-level comparison. 0 means exact.
     pub margin: f64,
 }
 

@@ -3,6 +3,7 @@
 //! Runs performance assertions with explicit status handling for missing dependencies.
 
 use crate::MetricContext;
+use crate::margin::{passes_with_margin, split_comparison};
 use regex::Regex;
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,9 @@ pub struct Verification {
     pub expression: String,
     /// Severity level (Critical, Warning, Info)
     pub severity: Severity,
-    /// Tolerance margin for numeric comparisons
+    /// Percent tolerance around the single top-level comparison. 0 means exact.
+    ///
+    /// For `a < b` the rule passes when `a <= b + |b| * margin / 100`.
     pub margin: f64,
 }
 
@@ -277,44 +280,90 @@ pub fn run_verifications(
                 .collect();
 
             // Step 3: Evaluate the expression
-            match context.metrics.evaluate(&v.expression) {
-                Ok(value) => {
-                    let passed = value != 0.0;
-                    VerificationResult {
-                        id: v.id.clone(),
-                        expression: v.expression.clone(),
-                        status: if passed {
-                            VerificationStatus::Passed
-                        } else {
-                            VerificationStatus::Failed
-                        },
-                        actual_value: Some(value),
-                        resolved_metrics: resolved,
-                        severity: v.severity,
-                        message: if passed {
-                            format!("{} = {:.2}", v.expression, value)
-                        } else {
-                            format!("{} = {:.2} (expected non-zero)", v.expression, value)
-                        },
-                    }
-                }
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    VerificationResult {
-                        id: v.id.clone(),
-                        expression: v.expression.clone(),
-                        status: VerificationStatus::Error {
-                            message: error_msg.clone(),
-                        },
-                        actual_value: None,
-                        resolved_metrics: resolved,
-                        severity: v.severity,
-                        message: format!("Evaluation error: {}", error_msg),
-                    }
-                }
+            // A negative or NaN margin takes the margin path, which rejects it.
+            let outcome = if v.margin != 0.0 {
+                evaluate_with_margin(v, context.metrics)
+            } else {
+                evaluate_plain(v, context.metrics)
+            };
+            match outcome {
+                Ok((passed, value, message)) => VerificationResult {
+                    id: v.id.clone(),
+                    expression: v.expression.clone(),
+                    status: if passed {
+                        VerificationStatus::Passed
+                    } else {
+                        VerificationStatus::Failed
+                    },
+                    actual_value: Some(value),
+                    resolved_metrics: resolved,
+                    severity: v.severity,
+                    message,
+                },
+                Err(error_msg) => VerificationResult {
+                    id: v.id.clone(),
+                    expression: v.expression.clone(),
+                    status: VerificationStatus::Error {
+                        message: error_msg.clone(),
+                    },
+                    actual_value: None,
+                    resolved_metrics: resolved,
+                    severity: v.severity,
+                    message: format!("Evaluation error: {}", error_msg),
+                },
             }
         })
         .collect()
+}
+
+/// Evaluate without a margin: any non-zero value passes.
+///
+/// Returns (passed, value, message).
+fn evaluate_plain(
+    v: &Verification,
+    metrics: &MetricContext,
+) -> Result<(bool, f64, String), String> {
+    let value = metrics.evaluate(&v.expression).map_err(|e| e.to_string())?;
+    let passed = value != 0.0;
+    let message = if passed {
+        format!("{} = {:.2}", v.expression, value)
+    } else {
+        format!("{} = {:.2} (expected non-zero)", v.expression, value)
+    };
+    Ok((passed, value, message))
+}
+
+/// Evaluate a single top-level comparison with `v.margin` percent tolerance.
+///
+/// Returns (passed, 1.0 or 0.0, message).
+fn evaluate_with_margin(
+    v: &Verification,
+    metrics: &MetricContext,
+) -> Result<(bool, f64, String), String> {
+    if !v.margin.is_finite() || v.margin < 0.0 {
+        return Err(format!(
+            "margin {} is invalid. Use a finite percentage >= 0.",
+            v.margin
+        ));
+    }
+    let split = split_comparison(&v.expression).map_err(|reason| {
+        format!(
+            "margin {}% needs one top-level comparison (<, <=, >, >=, ==): {reason}. Rewrite the expression or remove the margin.",
+            v.margin
+        )
+    })?;
+    let lhs = metrics.evaluate(split.lhs).map_err(|e| e.to_string())?;
+    let rhs = metrics.evaluate(split.rhs).map_err(|e| e.to_string())?;
+    let passed = passes_with_margin(lhs, split.op, rhs, v.margin);
+    let message = format!(
+        "{}: left {:.2}, right {:.2}, margin {}%{}",
+        v.expression,
+        lhs,
+        rhs,
+        v.margin,
+        if passed { "" } else { " (outside the margin)" }
+    );
+    Ok((passed, if passed { 1.0 } else { 0.0 }, message))
 }
 
 /// Summary of verification results
@@ -391,6 +440,55 @@ mod tests {
         assert!(vars.contains(&"raw".to_string()));
         assert!(vars.contains(&"overhead".to_string()));
         assert!(!vars.contains(&"min".to_string())); // builtin
+    }
+
+    fn run_one(expression: &str, margin: f64, metrics: &[(&str, f64)]) -> VerificationResult {
+        let mut ctx = MetricContext::new();
+        for (name, value) in metrics {
+            ctx.set(*name, *value);
+        }
+        let verification = Verification {
+            id: "v".to_string(),
+            expression: expression.to_string(),
+            severity: Severity::Critical,
+            margin,
+        };
+        let context = VerificationContext::new(&ctx, FxHashSet::default());
+        run_verifications(&[verification], &context).remove(0)
+    }
+
+    #[test]
+    fn margin_widens_less_than() {
+        let metrics = [("a", 104.0), ("b", 100.0)];
+        assert_eq!(
+            run_one("a < b", 0.0, &metrics).status,
+            VerificationStatus::Failed
+        );
+        let within = run_one("a < b", 5.0, &metrics);
+        assert_eq!(within.status, VerificationStatus::Passed);
+        assert!(within.message.contains("margin 5%"), "{}", within.message);
+        let outside = run_one("a < b", 3.0, &metrics);
+        assert_eq!(outside.status, VerificationStatus::Failed);
+        assert!(outside.message.contains("outside the margin"));
+    }
+
+    #[test]
+    fn margin_applies_to_arithmetic_sides() {
+        let metrics = [("raw", 150.0), ("overhead", 40.0)];
+        // 110 < 100 fails; within 10% of 100 it passes
+        assert!(run_one("(raw - overhead) < 100", 10.0, &metrics).passed());
+        assert!(!run_one("(raw - overhead) < 100", 5.0, &metrics).passed());
+    }
+
+    #[test]
+    fn margin_with_compound_expression_is_an_error() {
+        let result = run_one("a < b && b < 200", 5.0, &[("a", 1.0), ("b", 2.0)]);
+        match result.status {
+            VerificationStatus::Error { message } => {
+                assert!(message.contains("one top-level comparison"), "{message}")
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
     }
 
     #[test]
