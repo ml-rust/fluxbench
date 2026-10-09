@@ -108,48 +108,44 @@ impl Timer {
 
 // ─── Timer overhead calibration ──────────────────────────────────────────────
 
-/// Empty timer pairs read during calibration.
-const CALIBRATION_PAIRS: usize = 10_000;
+/// Empty timer pairs timed per calibration batch.
+const CALIBRATION_PAIRS: usize = 1_000;
 
-/// Median cost of one empty `Timer::start` + `Timer::stop` pair: (nanoseconds, cycles).
+/// Calibration batches. The cheapest batch is the least disturbed one.
+const CALIBRATION_BATCHES: usize = 20;
+
+/// Cost of one empty `Timer::start` + `Timer::stop` pair: (nanoseconds, cycles).
 static TIMER_OVERHEAD: OnceLock<(f64, f64)> = OnceLock::new();
 
-/// Median of a sample set. Returns 0 for an empty set.
-fn median(values: &mut [u64]) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    values.sort_unstable();
-    let mid = values.len() / 2;
-    if values.len() % 2 == 0 {
-        (values[mid - 1] as f64 + values[mid] as f64) / 2.0
-    } else {
-        values[mid] as f64
-    }
-}
-
-/// Time `CALIBRATION_PAIRS` empty timer pairs and return the medians.
-fn calibrate_timer() -> (f64, f64) {
-    let mut nanos = Vec::with_capacity(CALIBRATION_PAIRS);
-    let mut cycles = Vec::with_capacity(CALIBRATION_PAIRS);
-    for _ in 0..CALIBRATION_PAIRS {
-        let timer = Timer::start();
-        let (ns, cy) = std::hint::black_box(&timer).stop();
-        nanos.push(ns);
-        cycles.push(cy);
-    }
-    (median(&mut nanos), median(&mut cycles))
-}
-
-/// Median nanoseconds one empty timer pair reports.
+/// Time batches of empty timer pairs and return the cheapest per-pair cost.
 ///
-/// The first call calibrates from 10k empty pairs. Later calls read the cached value.
+/// An outer timer spans each whole batch. A coarse clock, such as the 100 ns
+/// Windows `Instant`, then still resolves the per-pair cost.
+fn calibrate_timer() -> (f64, f64) {
+    let mut best_ns = f64::MAX;
+    let mut best_cycles = f64::MAX;
+    for _ in 0..CALIBRATION_BATCHES {
+        let outer = Timer::start();
+        for _ in 0..CALIBRATION_PAIRS {
+            let timer = Timer::start();
+            std::hint::black_box(std::hint::black_box(&timer).stop());
+        }
+        let (ns, cycles) = outer.stop();
+        best_ns = best_ns.min(ns as f64 / CALIBRATION_PAIRS as f64);
+        best_cycles = best_cycles.min(cycles as f64 / CALIBRATION_PAIRS as f64);
+    }
+    (best_ns, best_cycles)
+}
+
+/// Nanoseconds one empty timer pair costs.
+///
+/// The first call calibrates from batches of empty pairs. Later calls read the cached value.
 /// The engine subtracts this once per timed region.
 pub fn timer_overhead_ns() -> f64 {
     TIMER_OVERHEAD.get_or_init(calibrate_timer).0
 }
 
-/// Median cycles one empty timer pair reports. It is 0 without a cycle counter.
+/// Cycles one empty timer pair costs. It is 0 without a cycle counter.
 ///
 /// It shares the calibration and cache with `timer_overhead_ns`.
 pub fn cycles_overhead() -> f64 {
@@ -220,13 +216,6 @@ mod tests {
         // The cached value is stable across calls.
         assert_eq!(ns, timer_overhead_ns());
         assert!(cycles_overhead() >= 0.0);
-    }
-
-    #[test]
-    fn median_of_odd_even_and_empty_sets() {
-        assert_eq!(median(&mut [5, 1, 3]), 3.0);
-        assert_eq!(median(&mut [4, 1, 3, 2]), 2.5);
-        assert_eq!(median(&mut []), 0.0);
     }
 
     #[test]
