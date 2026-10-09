@@ -2,6 +2,8 @@
 
 use super::config::{BenchmarkResult, DEFAULT_SAMPLE_COUNT, MeasureConfig, MeasureError};
 use fluxbench_ipc::Sample;
+use std::sync::Arc;
+use tokio::runtime::Runtime;
 
 /// The Bencher provides iteration control for benchmarks.
 ///
@@ -23,6 +25,8 @@ pub struct Bencher {
     pub(super) iter_called: bool,
     /// First error the body caused. `finish` reports it.
     pub(super) error: Option<MeasureError>,
+    /// Runtime for `iter_async`. `None` until attached or built.
+    pub(super) runtime: Option<Arc<Runtime>>,
 }
 
 impl Bencher {
@@ -44,6 +48,7 @@ impl Bencher {
             truncated: false,
             iter_called: false,
             error: None,
+            runtime: None,
         }
     }
 
@@ -121,8 +126,8 @@ impl Bencher {
         true
     }
 
-    /// Keep the first error. Later errors are dropped.
-    pub(super) fn record_error(&mut self, error: MeasureError) {
+    /// Record an error for `finish` to return. The first error wins.
+    pub fn record_error(&mut self, error: MeasureError) {
         if self.error.is_none() {
             self.error = Some(error);
         }

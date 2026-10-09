@@ -52,7 +52,20 @@ mod attr {
         T::Err: std::fmt::Display,
     {
         let value: syn::LitInt = meta.value()?.parse()?;
-        Ok(value.base10_parse().ok())
+        Ok(Some(value.base10_parse()?))
+    }
+
+    /// Parse `worker_threads = N`. N must be at least 1.
+    pub fn worker_threads(meta: &ParseNestedMeta) -> syn::Result<usize> {
+        let value: syn::LitInt = meta.value()?.parse()?;
+        let threads: usize = value.base10_parse()?;
+        if threads == 0 {
+            return Err(syn::Error::new_spanned(
+                &value,
+                "`worker_threads` must be at least 1",
+            ));
+        }
+        Ok(threads)
     }
 
     /// Parse a boolean literal attribute: `attr = true`
@@ -212,17 +225,8 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
             let wrapper_name = format_ident!("_flux_wrapper_{}_{}", fn_name, i);
 
             let runner_block = if is_async {
-                let async_config = &config.async_runtime;
-                let (runtime_builder, runtime_config) = async_runtime_tokens(async_config);
-                quote! {
-                    let rt = ::fluxbench::internal::tokio::runtime::Builder::#runtime_builder
-                        #runtime_config
-                        .build()
-                        .expect("FluxBench: Failed to create async runtime");
-                    rt.block_on(async {
-                        #fn_name(bencher, #arg_expr).await;
-                    });
-                }
+                let body_call = quote! { #fn_name(bencher, #arg_expr) };
+                generate_async_runner(&config.async_runtime, body_call)
             } else {
                 quote! {
                     #fn_name(bencher, #arg_expr);
@@ -273,7 +277,7 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
 
     let is_async = func.sig.asyncness.is_some();
     let runner_block = if is_async {
-        generate_async_runner(&config, fn_name)
+        generate_async_runner(&config.async_runtime, quote! { #fn_name(bencher) })
     } else {
         quote! {
             #fn_name(bencher);
@@ -315,18 +319,32 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
     })
 }
 
-fn generate_async_runner(config: &BenchConfig, fn_name: &syn::Ident) -> TokenStream2 {
-    let (runtime_builder, runtime_config) = async_runtime_tokens(&config.async_runtime);
+/// Generate the wrapper body for an async benchmark.
+///
+/// `body_call` creates the body future, for example `bench(bencher, arg)`.
+/// The wrapper builds one runtime and attaches it to the bencher.
+/// `drive_async_body` runs the body outside `block_on`, so `iter_async` can block per batch.
+/// A build error or a context error goes to the bencher. Nothing panics.
+fn generate_async_runner(config: &AsyncRuntimeConfig, body_call: TokenStream2) -> TokenStream2 {
+    let (runtime_builder, runtime_config) = async_runtime_tokens(config);
 
     quote! {
-        let rt = ::fluxbench::internal::tokio::runtime::Builder::#runtime_builder
+        let __flux_rt = match ::fluxbench::internal::tokio::runtime::Builder::#runtime_builder
             #runtime_config
             .build()
-            .expect("FluxBench: Failed to create async runtime");
-
-        rt.block_on(async {
-            #fn_name(bencher).await;
-        });
+        {
+            ::std::result::Result::Ok(__flux_rt) => ::std::sync::Arc::new(__flux_rt),
+            ::std::result::Result::Err(__flux_error) => {
+                bencher.attach_runtime_error(__flux_error.to_string());
+                return;
+            }
+        };
+        bencher.attach_runtime(::std::sync::Arc::clone(&__flux_rt));
+        if let ::std::result::Result::Err(__flux_error) =
+            ::fluxbench::internal::drive_async_body(&__flux_rt, #body_call)
+        {
+            bencher.record_error(__flux_error);
+        }
     }
 }
 
@@ -394,7 +412,7 @@ fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
             "threshold" => config.threshold = Some(attr::float(&meta)?),
             "budget" => config.budget_ns = parse_duration(&attr::string(&meta)?),
             "runtime" => runtime_type = Some(attr::string(&meta)?),
-            "worker_threads" => worker_threads = attr::int(&meta)?,
+            "worker_threads" => worker_threads = Some(attr::worker_threads(&meta)?),
             "enable_time" => enable_time = attr::bool(&meta)?,
             "enable_io" => enable_io = attr::bool(&meta)?,
             "tags" => config.tags = attr::tags(&meta)?,
@@ -922,5 +940,38 @@ mod tests {
             err.as_deref(),
             Some("`iterations` is not supported. Use `iters_per_sample`.")
         );
+    }
+
+    #[test]
+    fn bench_config_rejects_zero_worker_threads() {
+        let err = parse_bench_config(quote!(runtime = "multi_thread", worker_threads = 0))
+            .err()
+            .map(|e| e.to_string());
+        assert_eq!(err.as_deref(), Some("`worker_threads` must be at least 1"));
+    }
+
+    #[test]
+    fn bench_config_accepts_one_worker_thread() {
+        let config =
+            parse_bench_config(quote!(runtime = "multi_thread", worker_threads = 1)).unwrap();
+        assert!(matches!(
+            config.async_runtime,
+            AsyncRuntimeConfig::MultiThread {
+                worker_threads: Some(1),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn async_runner_drives_body_without_block_on_or_expect() {
+        let config = AsyncRuntimeConfig::default();
+        let tokens = generate_async_runner(&config, quote! { bench(bencher) }).to_string();
+        assert!(tokens.contains("drive_async_body"));
+        assert!(tokens.contains("attach_runtime"));
+        assert!(tokens.contains("attach_runtime_error"));
+        assert!(tokens.contains("new_current_thread"));
+        assert!(!tokens.contains("block_on"));
+        assert!(!tokens.contains("expect"));
     }
 }

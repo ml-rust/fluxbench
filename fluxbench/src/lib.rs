@@ -30,10 +30,13 @@
 //!
 //! ## Async Benchmarks
 //!
+//! `iter_async` times creating and awaiting each future.
+//! The runtime builds once per benchmark. `current_thread` (the default) and `multi_thread` both work.
+//!
 //! ```ignore
 //! #[flux::bench(runtime = "multi_thread", worker_threads = 4)]
 //! async fn async_benchmark(b: &mut Bencher) {
-//!     b.iter(|| async {
+//!     b.iter_async(|| async {
 //!         tokio::time::sleep(Duration::from_millis(1)).await;
 //!     });
 //! }
@@ -69,6 +72,7 @@ pub use fluxbench_stats::{
 /// Internal re-exports for macro use
 #[doc(hidden)]
 pub mod internal {
+    pub use fluxbench_core::drive_async_body;
     pub use inventory;
     pub use tokio;
 }

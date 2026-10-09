@@ -13,7 +13,7 @@ use super::state::Bencher;
 /// - `MeasureError::NoIterCall`: the body never called an `iter*` method.
 /// - `MeasureError::MultipleIterCalls`: the body called a second `iter*` method.
 /// - `MeasureError::NoSamples`: measurement collected no samples.
-/// - `MeasureError::AsyncRuntime`: the async fallback runtime did not build.
+/// - `MeasureError::AsyncRuntime`: the async runtime did not build, or `iter_async` ran inside a runtime context.
 pub fn run_benchmark_loop<F>(
     mut bencher: Bencher,
     runner_fn: F,

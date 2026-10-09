@@ -79,8 +79,8 @@ pub enum MeasureError {
     /// The measurement collected no samples.
     #[error("benchmark produced zero samples")]
     NoSamples,
-    /// The async fallback runtime did not build.
-    #[error("async runtime build error: {0}")]
+    /// The async runtime did not build, or `iter_async` ran inside a runtime context.
+    #[error("async runtime error: {0}")]
     AsyncRuntime(String),
 }
 

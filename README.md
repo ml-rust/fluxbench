@@ -50,7 +50,7 @@ Each attribute is independent. Use one, use all, add them later — your benchma
 | [Output formats](#output-formats)                       | Human, JSON, HTML, CSV, GitHub Actions summary                       |
 | [CI integration](#ci-integration)                       | Exit code 1 on critical failures, `flux.toml` severity levels        |
 | [Allocation tracking](#allocation-tracking)             | Per-iteration heap bytes and count                                   |
-| [Async support](#async-benchmarks)                      | Tokio runtimes via `#[bench(runtime = "multi_thread")]`              |
+| [Async support](#async-benchmarks)                      | Tokio `current_thread` or `multi_thread`, one runtime per benchmark  |
 | [Configuration](#configuration)                         | `flux.toml` with CLI override, macro > CLI > file > default          |
 
 ## Quick Start
@@ -174,9 +174,21 @@ async fn async_operation(b: &mut Bencher) {
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     });
 }
+
+#[bench(runtime = "current_thread", group = "async")]
+async fn async_with_setup(b: &mut Bencher) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    b.iter_async(|| async move { std::hint::black_box(addr.port()) });
+}
 ```
 
-Runtimes: `"multi_thread"` or `"current_thread"`
+- Runtimes: `"current_thread"` (default) or `"multi_thread"`. Both work.
+- `worker_threads` must be at least 1. It applies to `"multi_thread"` only.
+- The runtime builds once per benchmark, outside the timer.
+- `iter_async` times creating and awaiting each future. Each batch runs in one `block_on`.
+- Setup before `iter_async` can await, use `tokio::time`, and call `tokio::spawn`.
+- `iter_async` inside another runtime's `block_on` or task records an error and runs nothing.
 
 ## Performance Assertions
 

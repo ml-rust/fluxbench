@@ -4,32 +4,72 @@
 //! `worker_threads`, `enable_io`, and `enable_time` to configure the
 //! Tokio runtime that drives each benchmark.
 //!
-//! Run with: cargo run --example feature_async -p fluxbench --release
+//! The runtime builds once per benchmark. Both `current_thread` and
+//! `multi_thread` work. `iter_async` times creating and awaiting each future.
+//!
+//! Run with: cargo run --example feature_async -p fluxbench-examples --release
 
 use fluxbench::bench;
 use fluxbench::prelude::*;
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 // ---------------------------------------------------------------------------
-// Basic async — single-threaded runtime
+// Basic async — current-thread runtime (the default)
 // ---------------------------------------------------------------------------
 
-/// Minimal async benchmark — measures task spawn overhead alone.
-#[bench(runtime = "multi_thread", worker_threads = 1, group = "async_basic")]
+/// Minimal async benchmark — measures future poll overhead alone.
+#[bench(group = "async_basic")]
 async fn async_noop(b: &mut Bencher) {
     b.iter_async(|| async { black_box(42) });
 }
 
 /// Timer resolution benchmark — measures tokio::time overhead.
+#[bench(runtime = "current_thread", group = "async_basic", enable_time = true)]
+async fn async_timer_resolution(b: &mut Bencher) {
+    b.iter_async(|| async {
+        tokio::time::sleep(Duration::from_micros(1)).await;
+    });
+}
+
+/// TCP round trip on a current-thread runtime.
+///
+/// Setup awaits `bind` and `connect` and spawns an echo task before `iter_async`.
+/// The echo task runs inside each measured batch.
+#[bench(runtime = "current_thread", group = "async_basic")]
+async fn tcp_echo_round_trip(b: &mut Bencher) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 8];
+        while socket.read_exact(&mut buf).await.is_ok() {
+            if socket.write_all(&buf).await.is_err() {
+                break;
+            }
+        }
+    });
+    let client = tokio::sync::Mutex::new(tokio::net::TcpStream::connect(addr).await.unwrap());
+    let client = &client;
+    b.iter_async(|| async move {
+        let mut stream = client.lock().await;
+        stream.write_all(&7u64.to_le_bytes()).await.unwrap();
+        let mut buf = [0u8; 8];
+        stream.read_exact(&mut buf).await.unwrap();
+        black_box(u64::from_le_bytes(buf))
+    });
+}
+
+/// The same timer benchmark on a one-worker multi-thread runtime.
 #[bench(
     runtime = "multi_thread",
     worker_threads = 1,
     group = "async_basic",
     enable_time = true
 )]
-async fn async_timer_resolution(b: &mut Bencher) {
+async fn async_timer_resolution_multi_thread(b: &mut Bencher) {
     b.iter_async(|| async {
         tokio::time::sleep(Duration::from_micros(1)).await;
     });
