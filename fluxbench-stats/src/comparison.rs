@@ -116,6 +116,9 @@ pub fn compare_distributions(
     if candidate.len() < 2 {
         return Err(ComparisonError::InsufficientCandidate);
     }
+    if config.bootstrap_iterations == 0 {
+        return Err(ComparisonError::NoIterations);
+    }
 
     // Compute summary statistics for both
     let baseline_stats = compute_summary(baseline, config.outlier_method);
@@ -160,8 +163,9 @@ pub fn compare_distributions(
     let alpha = 1.0 - config.confidence_level;
     let lower_idx = (alpha / 2.0 * config.bootstrap_iterations as f64) as usize;
     let upper_idx = ((1.0 - alpha / 2.0) * config.bootstrap_iterations as f64) as usize;
-    let difference_ci_lower = sorted_diffs[lower_idx];
-    let difference_ci_upper = sorted_diffs[upper_idx.min(sorted_diffs.len() - 1)];
+    let last_idx = sorted_diffs.len() - 1;
+    let difference_ci_lower = sorted_diffs[lower_idx.min(last_idx)];
+    let difference_ci_upper = sorted_diffs[upper_idx.min(last_idx)];
 
     // Effect size (Cohen's d)
     // Pooled standard deviation
@@ -228,6 +232,9 @@ pub enum ComparisonError {
     /// Candidate needs at least 2 samples
     #[error("Candidate needs at least 2 samples")]
     InsufficientCandidate,
+    /// Bootstrap iterations is 0
+    #[error("Bootstrap iterations is 0: set a count of at least 1")]
+    NoIterations,
 }
 
 #[cfg(test)]
@@ -310,6 +317,29 @@ mod tests {
         assert!(matches!(
             compare_distributions(&[1.0, 2.0], &[], &config),
             Err(ComparisonError::EmptyCandidate)
+        ));
+    }
+
+    #[test]
+    fn test_both_empty() {
+        let config = ComparisonConfig::default();
+
+        assert!(matches!(
+            compare_distributions(&[], &[], &config),
+            Err(ComparisonError::EmptyBaseline)
+        ));
+    }
+
+    #[test]
+    fn test_zero_iterations() {
+        let config = ComparisonConfig {
+            bootstrap_iterations: 0,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            compare_distributions(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0], &config),
+            Err(ComparisonError::NoIterations)
         ));
     }
 

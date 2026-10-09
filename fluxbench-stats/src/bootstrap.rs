@@ -79,6 +79,9 @@ pub enum BootstrapError {
 
     #[error("All samples have the same value")]
     NoVariance,
+
+    #[error("Bootstrap iterations is 0: set a count of at least 1, or skip the bootstrap")]
+    NoIterations,
 }
 
 /// Compute bootstrap confidence interval for the mean
@@ -113,6 +116,10 @@ pub fn compute_bootstrap(
         return Err(BootstrapError::InvalidConfidenceLevel(
             config.confidence_level,
         ));
+    }
+
+    if config.iterations == 0 {
+        return Err(BootstrapError::NoIterations);
     }
 
     let n = samples.len();
@@ -236,6 +243,8 @@ fn generate_bootstrap_means_serial(samples: &[f64], iterations: usize) -> Vec<f6
 /// # Arguments
 /// * `sorted` — Bootstrap means, **must be pre-sorted in ascending order**.
 /// * `confidence` — Confidence level (e.g. 0.95).
+///
+/// `sorted` must not be empty. `compute_bootstrap` checks this.
 fn percentile_interval_sorted(sorted: &[f64], confidence: f64) -> (f64, f64) {
     let n = sorted.len();
     let alpha = (1.0 - confidence) / 2.0;
@@ -254,6 +263,9 @@ fn percentile_interval_sorted(sorted: &[f64], confidence: f64) -> (f64, f64) {
 /// * `samples` — Original sample data (unsorted).
 /// * `sorted` — Bootstrap means, **must be pre-sorted in ascending order**.
 /// * `confidence` — Confidence level (e.g. 0.95).
+///
+/// `samples` needs at least 2 values and `sorted` must not be empty.
+/// `compute_bootstrap` checks both.
 fn bca_interval(samples: &[f64], sorted: &[f64], confidence: f64) -> (f64, f64) {
     let n = samples.len();
     let b = sorted.len();
@@ -446,6 +458,47 @@ mod tests {
         assert!(matches!(
             result,
             Err(BootstrapError::NotEnoughSamples { .. })
+        ));
+    }
+
+    #[test]
+    fn test_zero_iterations() {
+        let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let config = BootstrapConfig {
+            iterations: 0,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            compute_bootstrap(&samples, &config),
+            Err(BootstrapError::NoIterations)
+        ));
+    }
+
+    #[test]
+    fn test_zero_iterations_identical_samples() {
+        let samples = vec![2.0, 2.0, 2.0, 2.0];
+        let config = BootstrapConfig {
+            iterations: 0,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            compute_bootstrap(&samples, &config),
+            Err(BootstrapError::NoIterations)
+        ));
+    }
+
+    #[test]
+    fn test_single_sample() {
+        let config = BootstrapConfig {
+            iterations: 100,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            compute_bootstrap(&[1.0], &config),
+            Err(BootstrapError::NotEnoughSamples { got: 1, min: 3 })
         ));
     }
 
