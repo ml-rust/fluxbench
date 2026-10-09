@@ -237,12 +237,16 @@ impl Bencher {
     }
 
     /// Run benchmark with batched iterations (user-specified batch size)
+    ///
+    /// A `batch_size` of 0 is clamped to 1.
     #[inline]
     pub fn iter_batched<T, S, F, R>(&mut self, batch_size: u64, mut setup: S, mut routine: F)
     where
         S: FnMut() -> T,
         F: FnMut(&T) -> R,
     {
+        let batch_size = batch_size.max(1);
+
         // Run setup
         let input = setup();
 
@@ -502,6 +506,24 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_iter_batched_zero_batch_size() {
+        let mut bencher = Bencher::new(false);
+        let mut calls = 0u64;
+
+        bencher.iter_batched(
+            0,
+            || 1u64,
+            |x| {
+                calls += 1;
+                *x
+            },
+        );
+
+        assert_eq!(calls, 1);
+        assert_eq!(bencher.iteration_count(), 1);
+    }
 
     #[test]
     fn test_basic_iter() {
