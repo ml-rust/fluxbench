@@ -14,7 +14,7 @@ members = [
 
 [workspace.package]
 authors = ["Farhan Syah"]
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -25,15 +25,15 @@ readme = "README.md"
 
 [workspace.dependencies]
 # Workspace crates
-fluxbench = { path = "fluxbench", version = "0.1.0" }
-fluxbench-cli = { path = "fluxbench-cli", version = "0.1.0" }
+fluxbench = { path = "fluxbench", version = "0.2.0" }
+fluxbench-cli = { path = "fluxbench-cli", version = "0.2.0" }
 # No default features: only the facade's `async` feature pulls in tokio.
-fluxbench-core = { path = "fluxbench-core", version = "0.1.0", default-features = false }
-fluxbench-ipc = { path = "fluxbench-ipc", version = "0.1.0" }
-fluxbench-logic = { path = "fluxbench-logic", version = "0.1.0" }
-fluxbench-macros = { path = "fluxbench-macros", version = "0.1.0" }
-fluxbench-report = { path = "fluxbench-report", version = "0.1.0" }
-fluxbench-stats = { path = "fluxbench-stats", version = "0.1.0" }
+fluxbench-core = { path = "fluxbench-core", version = "0.2.0", default-features = false }
+fluxbench-ipc = { path = "fluxbench-ipc", version = "0.2.0" }
+fluxbench-logic = { path = "fluxbench-logic", version = "0.2.0" }
+fluxbench-macros = { path = "fluxbench-macros", version = "0.2.0" }
+fluxbench-report = { path = "fluxbench-report", version = "0.2.0" }
+fluxbench-stats = { path = "fluxbench-stats", version = "0.2.0" }
 
 # Serialization (rkyv IPC)
 rkyv = "0.8"

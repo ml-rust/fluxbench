@@ -262,7 +262,7 @@ checksum = "25929004897f2bbab309121a60400d36992f6d911d09baa6c172f6cc55706601"
 
 [[package]]
 name = "fluxbench"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "fluxbench-cli",
  "fluxbench-core",
@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "fluxbench-cli"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "fluxbench-core"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "fluxbench-ipc",
  "inventory",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "fluxbench-ipc"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "rkyv",
  "thiserror",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "fluxbench-logic"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "evalexpr",
  "fluxbench-core",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "fluxbench-macros"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "fluxbench-report"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "fluxbench-core",
@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "fluxbench-stats"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "approx",
  "rand",
