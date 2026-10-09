@@ -8,6 +8,7 @@ use super::config::MeasureConfig;
 use super::state::Bencher;
 use crate::allocator::{current_allocation, reset_allocation_counter};
 use crate::measure::{cycles_overhead, timer_overhead_ns};
+use crate::shutdown::shutdown_requested;
 use fluxbench_ipc::Sample;
 use std::time::{Duration, Instant};
 
@@ -133,13 +134,13 @@ impl Bencher {
         let limit = deadline(&self.config);
         let start = Instant::now();
         for _ in 0..self.config.sample_count {
-            if !self.samples.is_empty() && start.elapsed() > limit {
+            // A stop request ends measurement even with no samples yet.
+            if shutdown_requested() || (!self.samples.is_empty() && start.elapsed() > limit) {
                 self.truncated = true;
                 break;
             }
             let raw = batch(self, ips);
-            self.samples
-                .push(raw.to_sample(ips, overhead_ns, overhead_cycles));
+            self.record_sample(raw.to_sample(ips, overhead_ns, overhead_cycles));
         }
     }
 
@@ -149,6 +150,7 @@ impl Bencher {
     /// Sample sizing uses this value, so setup-heavy bodies still fit the measurement budget.
     /// Only running sums persist, so memory stays constant.
     /// A zero budget runs one batch of one call.
+    /// A stop request ends warmup after the current batch.
     fn warmup<B>(&mut self, batch: &mut B) -> f64
     where
         B: FnMut(&mut Self, u64) -> SampleRaw,
@@ -165,7 +167,7 @@ impl Bencher {
             let wall_ns = u64::try_from(batch_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
             sum_wall_ns = sum_wall_ns.saturating_add(wall_ns.max(raw.ns));
             sum_iters = sum_iters.saturating_add(n);
-            if start.elapsed() >= budget {
+            if start.elapsed() >= budget || shutdown_requested() {
                 break;
             }
             n = n.saturating_mul(2);

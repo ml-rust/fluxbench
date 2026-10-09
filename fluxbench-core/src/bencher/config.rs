@@ -97,6 +97,7 @@ pub struct BenchmarkResult {
     pub total_time_ns: u64,
     /// Routine calls per sample
     pub iters_per_sample: u64,
-    /// `true` when the hard deadline stopped measurement before `sample_count` samples
+    /// `true` when the hard deadline or a SIGTERM stop request ended measurement
+    /// before `sample_count` samples
     pub truncated: bool,
 }

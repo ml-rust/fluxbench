@@ -1,8 +1,9 @@
 //! The `Bencher` struct: construction, accessors, and result assembly.
 
 use super::config::{BenchmarkResult, DEFAULT_SAMPLE_COUNT, MeasureConfig, MeasureError};
+use super::sink::SampleSink;
 use fluxbench_ipc::Sample;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 
 /// The Bencher provides iteration control for benchmarks.
@@ -19,7 +20,7 @@ pub struct Bencher {
     pub(super) warmup_iterations: u64,
     /// Routine calls per measurement sample
     pub(super) iters_per_sample: u64,
-    /// `true` when the hard deadline cut measurement short
+    /// `true` when the hard deadline or a stop request cut measurement short
     pub(super) truncated: bool,
     /// `true` once the body called an `iter*` method
     pub(super) iter_called: bool,
@@ -27,6 +28,9 @@ pub struct Bencher {
     pub(super) error: Option<MeasureError>,
     /// Runtime for `iter_async`. `None` until attached or built.
     pub(super) runtime: Option<Arc<Runtime>>,
+    /// Receives each sample when it is recorded. The mutex keeps `Bencher: Sync`.
+    /// The engine reaches it through `&mut self`, so it never locks.
+    pub(super) sink: Option<Mutex<Box<dyn SampleSink>>>,
 }
 
 impl Bencher {
@@ -49,6 +53,28 @@ impl Bencher {
             iter_called: false,
             error: None,
             runtime: None,
+            sink: None,
+        }
+    }
+
+    /// Send each recorded sample to `sink` during measurement.
+    ///
+    /// The sink runs between samples, outside every timed region.
+    /// Samples still land in the result as before.
+    pub fn with_sample_sink(mut self, sink: impl SampleSink + 'static) -> Self {
+        self.sink = Some(Mutex::new(Box::new(sink)));
+        self
+    }
+
+    /// Record one sample and pass it to the sink.
+    pub(super) fn record_sample(&mut self, sample: Sample) {
+        self.samples.push(sample);
+        if let Some(sink) = self.sink.as_mut() {
+            let sink = match sink.get_mut() {
+                Ok(sink) => sink,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            sink.on_sample(&sample);
         }
     }
 
@@ -191,6 +217,23 @@ mod tests {
     fn finish_without_iter_is_error() {
         let err = Bencher::new(false).finish().err();
         assert_eq!(err, Some(MeasureError::NoIterCall));
+    }
+
+    #[test]
+    fn sink_receives_every_sample_in_order() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = Arc::clone(&seen);
+        let bencher =
+            Bencher::for_config(false, 5, Some(3)).with_sample_sink(move |sample: &Sample| {
+                sink_seen.lock().expect("lock").push(*sample);
+            });
+        let result = crate::bencher::run_benchmark_loop(bencher, |b| {
+            b.iter(|| std::hint::black_box(1u64 + 1));
+        })
+        .expect("run succeeds");
+        let seen = seen.lock().expect("lock");
+        assert_eq!(seen.len(), 5);
+        assert_eq!(seen.as_slice(), result.samples.as_slice());
     }
 
     #[test]

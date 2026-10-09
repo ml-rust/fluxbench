@@ -32,7 +32,7 @@ Run `cargo bench` and you get bootstrap confidence intervals, percentile stats (
 
 Each attribute is independent. Use one, use all, add them later — your benchmarks don't need to be restructured.
 
-**Benchmarks that crash don't take down the suite.** Every benchmark runs in its own process. A panic, segfault, or timeout in one is reported as a failure for _that_ benchmark — the rest keep running. Your CI finishes, you see what broke, you fix it.
+**Benchmarks that crash don't take down the suite.** Every benchmark runs in a worker process. A panic, segfault, abort, or timeout in one is reported as a failure for _that_ benchmark — the rest keep running. Your CI finishes, you see what broke, you fix it.
 
 **Performance rules live next to the code they protect.** Instead of a fragile shell script that parses output and compares numbers, you write `#[verify(expr = "api_latency_p99 < 5000", severity = "critical")]` and FluxBench enforces it on every run. Critical failures exit non-zero. Warnings get reported. Info is logged.
 
@@ -531,6 +531,32 @@ let (alloc_bytes, alloc_count) = fluxbench::current_allocation();
 println!("Bytes: {}, Count: {}", alloc_bytes, alloc_count);
 ```
 
+### Crash Isolation
+
+Benchmarks run in worker processes by default. Every benchmark gets its own report entry, whatever happens to its worker.
+
+- Persistent mode (default): one worker runs many benchmarks. A worker that crashes, times out, or breaks the IPC stream is killed and replaced. The next benchmark gets a fresh worker.
+- One-shot mode (`--one-shot`): each benchmark gets a fresh worker.
+- `--jobs N`: N workers run benchmarks in parallel. Both modes support it.
+
+A failed benchmark reports status `crashed` or `failed` and a `failure.kind`:
+
+| `failure.kind` | Cause                                                                     |
+| -------------- | ------------------------------------------------------------------------- |
+| `panic`        | The body panicked. `message` holds the panic text and location. `backtrace` comes from the panic site. |
+| `signal`       | A signal killed the worker. `failure.signal` holds the name, e.g. `SIGSEGV` or `SIGABRT`. Unix only. |
+| `timeout`      | The worker exceeded `--worker-timeout`. `message` states the partial sample count. |
+| `crashed`      | The worker exited with a code, broke the IPC stream, or did not start.    |
+| `unknown`      | The body never called `b.iter*`, or another measurement error occurred.   |
+
+`panic`, `signal`, `timeout`, and `crashed` set status `crashed`, so the run exits with code 1.
+
+Workers stream samples to the supervisor during measurement. On a timeout, the supervisor sends SIGTERM and collects the samples sent so far for 500 ms. Then it sends SIGKILL. The partial samples never count as a pass and never form metrics. On other platforms, a timeout kills the worker at once.
+
+A new worker must send its handshake within 10 s. Otherwise the supervisor kills it and reports `crashed` for that benchmark.
+
+User code can print to stdout: on Unix the worker's stdout goes to `/dev/null`, and IPC uses dedicated pipes. On other platforms, IPC uses the worker's stdin and stdout, so `println!` in a benchmark body corrupts the protocol stream.
+
 ### In-Process Mode
 
 For debugging, run benchmarks in the same process:
@@ -568,6 +594,7 @@ The `examples/` crate contains runnable demos for each feature:
 | `feature_panic`       | Crash isolation (panicking benchmarks)    |
 | `library_bench`       | Benchmarking a library crate              |
 | `ci_regression`       | CI regression detection workflow          |
+| `test_isolation`      | Fixtures for the isolation tests: panic, abort, SIGSEGV, timeout |
 
 ```bash
 cargo run -p fluxbench-examples --example feature_iteration --release

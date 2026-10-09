@@ -141,6 +141,7 @@ pub fn build_report(
                 .unwrap_or_else(|| "panic".to_string()),
             message: msg.clone(),
             backtrace: result.backtrace.clone(),
+            signal: result.signal.clone(),
         });
 
         match result.status {

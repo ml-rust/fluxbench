@@ -36,7 +36,8 @@
 //!
 //! ## Modules
 //!
-//! - [`execution`] - Core benchmark execution logic (in-process and isolated)
+//! - [`execution`] - Execution config, result type, and in-process execution
+//! - [`isolated`] - Isolated execution in worker processes via IPC
 //! - [`statistics`] - Parallel statistics computation
 //! - [`report`] - Report building with bootstrap CIs
 //! - [`verification`] - Comparison, synthetic, and verification processing
@@ -45,14 +46,16 @@
 
 mod execution;
 mod formatting;
+mod isolated;
 mod metadata;
 mod report;
 mod statistics;
 mod verification;
 
 // Re-export public API
-pub use execution::{ExecutionConfig, Executor, IsolatedExecutor};
+pub use execution::{ExecutionConfig, Executor};
 pub use formatting::format_human_output;
+pub use isolated::IsolatedExecutor;
 pub use report::build_report;
 pub use statistics::compute_statistics;
 pub use verification::execute_verifications;

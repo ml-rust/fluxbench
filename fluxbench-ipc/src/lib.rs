@@ -19,7 +19,9 @@ pub use ring_buffer::SampleRingBuffer;
 /// Protocol version for compatibility checking.
 ///
 /// Version 2 carries `f64` sample means and the per-sample iteration count.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// Version 3 adds `FailureKind::Signal(name)` and `FailureKind::Crashed`.
+/// The worker streams sample batches during measurement.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Maximum samples per batch (prevents unbounded memory growth)
 pub const MAX_BATCH_SIZE: usize = 10_000;

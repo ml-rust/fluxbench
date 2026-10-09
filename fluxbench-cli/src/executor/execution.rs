@@ -1,7 +1,7 @@
 //! Benchmark Execution
 //!
-//! Core execution logic for running benchmarks, including both in-process
-//! and isolated (IPC-based) execution modes.
+//! Execution config, result type, and in-process execution.
+//! `isolated.rs` holds the IPC-based executor.
 //!
 //! ## Execution Modes
 //!
@@ -30,7 +30,6 @@
 //!  BenchExecutionResult (samples, status, allocations, cycles)
 //! ```
 
-use crate::supervisor::{IpcBenchmarkResult, IpcBenchmarkStatus, Supervisor};
 use fluxbench_core::{
     Bencher, BenchmarkDef, MeasureConfig, cycles_overhead, run_benchmark_loop, timer_overhead_ns,
 };
@@ -39,10 +38,22 @@ use fluxbench_report::BenchmarkStatus;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::{Duration, Instant};
 
+/// Progress bar for `len` benchmarks.
+pub(super) fn progress_bar(len: usize) -> ProgressBar {
+    let pb = ProgressBar::new(len as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("#>-"),
+    );
+    pb
+}
+
 /// Mean per-iteration allocation bytes and count across samples, rounded.
 ///
 /// Each sample already holds a per-iteration mean. Returns `(0, 0)` for no samples.
-fn mean_allocations(samples: &[Sample]) -> (u64, u64) {
+pub(super) fn mean_allocations(samples: &[Sample]) -> (u64, u64) {
     if samples.is_empty() {
         return (0, 0);
     }
@@ -182,7 +193,10 @@ pub struct BenchExecutionResult {
     pub alloc_count: u64,
     pub duration_ns: u64,
     pub error_message: Option<String>,
+    /// Report string of the failure kind, e.g. `panic`, `timeout`, `signal`
     pub failure_kind: Option<String>,
+    /// Signal name when a signal killed the worker, e.g. `SIGSEGV`
+    pub signal: Option<String>,
     pub backtrace: Option<String>,
     pub severity: fluxbench_core::Severity,
     /// Per-benchmark regression threshold (0.0 = use global)
@@ -209,15 +223,7 @@ impl Executor {
 
     /// Execute all provided benchmarks
     pub fn execute(&mut self, benchmarks: &[&BenchmarkDef]) -> Vec<BenchExecutionResult> {
-        let pb = ProgressBar::new(benchmarks.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(
-                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}",
-                )
-                .unwrap_or_else(|_| ProgressStyle::default_bar())
-                .progress_chars("#>-"),
-        );
+        let pb = progress_bar(benchmarks.len());
 
         for bench in benchmarks {
             pb.set_message(bench.id.to_string());
@@ -281,6 +287,7 @@ impl Executor {
                     duration_ns,
                     error_message: None,
                     failure_kind: None,
+                    signal: None,
                     backtrace: None,
                     severity: bench.severity,
                     threshold: bench.threshold,
@@ -316,7 +323,7 @@ impl Executor {
 /// Result with no samples for a benchmark that did not finish.
 ///
 /// `kind` matches the isolated-mode failure kind names.
-fn error_result(
+pub(super) fn error_result(
     bench: &BenchmarkDef,
     status: BenchmarkStatus,
     message: String,
@@ -337,176 +344,20 @@ fn error_result(
         duration_ns,
         error_message: Some(message),
         failure_kind: Some(kind.to_string()),
+        signal: None,
         backtrace: None,
         severity: bench.severity,
         threshold: bench.threshold,
     }
 }
 
-/// Executor that runs benchmarks in isolated worker processes via IPC
-///
-/// This provides crash isolation - if a benchmark panics or crashes,
-/// it won't take down the supervisor process.
-pub struct IsolatedExecutor {
-    config: ExecutionConfig,
-    timeout: Duration,
-    reuse_workers: bool,
-    num_workers: usize,
-}
-
-impl IsolatedExecutor {
-    /// Create a new isolated executor
-    pub fn new(
-        config: ExecutionConfig,
-        timeout: Duration,
-        reuse_workers: bool,
-        num_workers: usize,
-    ) -> Self {
-        Self {
-            config,
-            timeout,
-            reuse_workers,
-            num_workers: num_workers.max(1),
-        }
-    }
-
-    /// Execute all provided benchmarks in isolated worker processes
-    pub fn execute(&self, benchmarks: &[&BenchmarkDef]) -> Vec<BenchExecutionResult> {
-        let pb = ProgressBar::new(benchmarks.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(
-                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}",
-                )
-                .unwrap_or_else(|_| ProgressStyle::default_bar())
-                .progress_chars("#>-"),
-        );
-        pb.set_message("Starting isolated workers...");
-
-        // Build per-benchmark IPC configs
-        let ipc_configs: Vec<BenchmarkConfig> = benchmarks
-            .iter()
-            .map(|bench| {
-                self.config
-                    .resolve_for_benchmark(bench)
-                    .to_ipc_config(self.timeout)
-            })
-            .collect();
-
-        // Use the first config as default for the supervisor
-        let default_config = ipc_configs
-            .first()
-            .cloned()
-            .unwrap_or_else(|| self.config.to_ipc_config(self.timeout));
-
-        let supervisor = Supervisor::new(default_config, self.timeout, self.num_workers);
-
-        // Run benchmarks via IPC with per-benchmark configs
-        let ipc_results = if self.reuse_workers {
-            supervisor.run_with_reuse_configs(benchmarks, &ipc_configs)
-        } else {
-            supervisor.run_all_configs(benchmarks, &ipc_configs)
-        };
-
-        // Convert IPC results to BenchExecutionResult
-        let mut results = Vec::with_capacity(benchmarks.len());
-
-        match ipc_results {
-            Ok(ipc_results) => {
-                for (ipc_result, bench) in ipc_results.into_iter().zip(benchmarks.iter()) {
-                    pb.set_message(bench.id.to_string());
-                    results.push(self.convert_ipc_result(ipc_result, bench));
-                    pb.inc(1);
-                }
-            }
-            Err(e) => {
-                // Supervisor-level failure - mark all as crashed
-                for bench in benchmarks {
-                    results.push(error_result(
-                        bench,
-                        BenchmarkStatus::Crashed,
-                        format!("Supervisor error: {}", e),
-                        "crashed",
-                        0,
-                    ));
-                    pb.inc(1);
-                }
-            }
-        }
-
-        pb.finish_with_message("Complete (isolated)");
-        results
-    }
-
-    /// Convert an IPC result to a BenchExecutionResult
-    fn convert_ipc_result(
-        &self,
-        ipc_result: IpcBenchmarkResult,
-        bench: &BenchmarkDef,
-    ) -> BenchExecutionResult {
-        let (status, error_message, failure_kind, backtrace) = match ipc_result.status {
-            IpcBenchmarkStatus::Success => (BenchmarkStatus::Passed, None, None, None),
-            IpcBenchmarkStatus::Failed {
-                message,
-                kind,
-                backtrace,
-            } => (
-                BenchmarkStatus::Failed,
-                Some(message),
-                Some(kind),
-                backtrace,
-            ),
-            IpcBenchmarkStatus::Crashed {
-                message,
-                kind,
-                backtrace,
-            } => (
-                BenchmarkStatus::Crashed,
-                Some(message),
-                Some(kind),
-                backtrace,
-            ),
-        };
-
-        // Extract timing samples as f64 for statistics
-        let samples: Vec<f64> = ipc_result
-            .samples
-            .iter()
-            .map(|s| s.duration_nanos)
-            .collect();
-
-        // Extract CPU cycles
-        let cpu_cycles: Vec<f64> = ipc_result.samples.iter().map(|s| s.cpu_cycles).collect();
-
-        let (alloc_bytes, alloc_count) = mean_allocations(&ipc_result.samples);
-
-        BenchExecutionResult {
-            benchmark_id: bench.id.to_string(),
-            benchmark_name: bench.name.to_string(),
-            group: bench.group.to_string(),
-            file: bench.file.to_string(),
-            line: bench.line,
-            status,
-            samples,
-            cpu_cycles,
-            alloc_bytes,
-            alloc_count,
-            duration_ns: ipc_result.total_duration_nanos,
-            error_message,
-            failure_kind,
-            backtrace,
-            severity: bench.severity,
-            threshold: bench.threshold,
-        }
-    }
-}
-
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use fluxbench_core::Severity;
 
-    fn bench_def() -> BenchmarkDef {
+    /// Minimal benchmark definition for executor tests.
+    pub(in crate::executor) fn bench_def() -> BenchmarkDef {
         BenchmarkDef {
             id: "b",
             name: "b",

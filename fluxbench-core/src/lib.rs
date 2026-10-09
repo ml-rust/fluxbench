@@ -10,12 +10,13 @@
 mod allocator;
 mod bencher;
 mod measure;
+mod shutdown;
 mod worker;
 
 pub use allocator::{TrackingAllocator, current_allocation, reset_allocation_counter};
 pub use bencher::{
     Bencher, BenchmarkResult, DEFAULT_SAMPLE_COUNT, IterationMode, MIN_SAMPLE_COUNT, MeasureConfig,
-    MeasureError, SETUP_CHUNK, drive_async_body, run_benchmark_loop,
+    MeasureError, SETUP_CHUNK, SampleSink, drive_async_body, run_benchmark_loop,
 };
 /// Whether this platform provides hardware cycle counters (x86_64 RDTSCP or AArch64 CNTVCT_EL0).
 /// When `false`, cycle counts are reported as 0 and only wall-clock nanoseconds are available.

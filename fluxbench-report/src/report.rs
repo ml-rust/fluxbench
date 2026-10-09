@@ -296,12 +296,20 @@ pub struct Comparison {
 /// Failure information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FailureInfo {
-    /// Failure type/kind
+    /// Failure kind. One of:
+    /// - `panic`: the benchmark panicked
+    /// - `timeout`: the worker exceeded `--worker-timeout`
+    /// - `signal`: a signal killed the worker. `signal` holds its name.
+    /// - `crashed`: the worker exited, broke the IPC stream, or never started
+    /// - `assertion`, `allocation_limit`, `unknown`: other errors
     pub kind: String,
     /// Error message
     pub message: String,
     /// Stack backtrace (if available)
     pub backtrace: Option<String>,
+    /// Signal name for kind `signal`, e.g. `SIGSEGV`. Absent for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
 }
 
 /// Report summary
@@ -347,6 +355,36 @@ mod tests {
         let config: ReportConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.sample_count, 100);
         assert_eq!(config.iters_per_sample, None);
+    }
+
+    #[test]
+    fn failure_info_omits_absent_signal_and_reads_old_json() {
+        let info = FailureInfo {
+            kind: "panic".to_string(),
+            message: "boom".to_string(),
+            backtrace: None,
+            signal: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"panic","message":"boom","backtrace":null}"#
+        );
+        let back: FailureInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.signal, None);
+    }
+
+    #[test]
+    fn failure_info_carries_signal_name() {
+        let info = FailureInfo {
+            kind: "signal".to_string(),
+            message: "worker killed by SIGSEGV".to_string(),
+            backtrace: None,
+            signal: Some("SIGSEGV".to_string()),
+        };
+        let value: serde_json::Value = serde_json::to_value(&info).unwrap();
+        assert_eq!(value["kind"], "signal");
+        assert_eq!(value["signal"], "SIGSEGV");
     }
 
     #[test]

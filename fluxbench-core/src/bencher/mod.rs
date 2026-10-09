@@ -9,6 +9,7 @@ mod config;
 mod engine;
 mod iter;
 mod run;
+mod sink;
 mod state;
 
 pub use async_body::drive_async_body;
@@ -18,4 +19,5 @@ pub use config::{
 };
 pub use iter::SETUP_CHUNK;
 pub use run::run_benchmark_loop;
+pub use sink::SampleSink;
 pub use state::Bencher;

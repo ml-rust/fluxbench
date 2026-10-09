@@ -227,6 +227,7 @@ mod tests {
                 kind: "panic".to_string(),
                 message: "boom".to_string(),
                 backtrace: None,
+                signal: None,
             }),
         }]);
 

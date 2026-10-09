@@ -334,8 +334,10 @@ name = "fluxbench-examples"
 version = "0.0.0"
 dependencies = [
  "fluxbench",
+ "libc",
  "rand",
  "regex",
+ "serde_json",
  "tokio",
 ]
 

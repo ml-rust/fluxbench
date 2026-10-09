@@ -36,3 +36,12 @@ name = "library_bench"
 
 [[example]]
 name = "ci_regression"
+
+[[example]]
+name = "test_isolation"
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

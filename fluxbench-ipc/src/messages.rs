@@ -175,20 +175,63 @@ pub enum WorkerMessage {
 }
 
 /// Categories of benchmark failures
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, RkyvSerialize, RkyvDeserialize)]
+///
+/// `as_str` gives the report string for each kind.
+/// The worker sends `Panic` and `Unknown`.
+/// The supervisor sets `Timeout`, `Signal` and `Crashed` from what it sees.
+#[derive(Debug, Clone, PartialEq, Eq, Archive, RkyvSerialize, RkyvDeserialize)]
 pub enum FailureKind {
-    /// Rust panic (caught)
+    /// Rust panic (caught). Report string: `panic`.
     Panic,
-    /// Timeout exceeded
+    /// The worker exceeded the worker timeout. Report string: `timeout`.
     Timeout,
-    /// Assertion failure in verification
+    /// Assertion failure in verification. Report string: `assertion`.
     Assertion,
-    /// Allocation limit exceeded
+    /// Allocation limit exceeded. Report string: `allocation_limit`.
     AllocationLimit,
-    /// Signal received (SIGSEGV, SIGBUS, etc.)
-    Signal,
-    /// Unknown error
+    /// A signal killed the worker. Holds the name, e.g. `SIGSEGV` or `signal 40`.
+    /// Report string: `signal`.
+    Signal(String),
+    /// The worker exited, broke the IPC stream, or never started. Report string: `crashed`.
+    Crashed,
+    /// Unknown error. Report string: `unknown`.
     Unknown,
+}
+
+impl FailureKind {
+    /// Report string for this kind. Strings for older kinds never change.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FailureKind::Panic => "panic",
+            FailureKind::Timeout => "timeout",
+            FailureKind::Assertion => "assertion",
+            FailureKind::AllocationLimit => "allocation_limit",
+            FailureKind::Signal(_) => "signal",
+            FailureKind::Crashed => "crashed",
+            FailureKind::Unknown => "unknown",
+        }
+    }
+
+    /// Signal name for `Signal`, else `None`.
+    pub fn signal_name(&self) -> Option<&str> {
+        match self {
+            FailureKind::Signal(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// `true` when the run ended abnormally: panic, timeout, signal, or crash.
+    ///
+    /// A crash fails CI. Other kinds report a failed benchmark.
+    pub fn is_crash(&self) -> bool {
+        matches!(
+            self,
+            FailureKind::Panic
+                | FailureKind::Timeout
+                | FailureKind::Signal(_)
+                | FailureKind::Crashed
+        )
+    }
 }
 
 /// Commands sent from Supervisor to Worker
@@ -445,6 +488,43 @@ mod tests {
             ..Default::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn failure_kind_strings_are_stable() {
+        let cases = [
+            (FailureKind::Panic, "panic"),
+            (FailureKind::Timeout, "timeout"),
+            (FailureKind::Assertion, "assertion"),
+            (FailureKind::AllocationLimit, "allocation_limit"),
+            (FailureKind::Signal("SIGSEGV".to_string()), "signal"),
+            (FailureKind::Crashed, "crashed"),
+            (FailureKind::Unknown, "unknown"),
+        ];
+        for (kind, text) in cases {
+            assert_eq!(kind.as_str(), text);
+        }
+    }
+
+    #[test]
+    fn failure_kind_signal_name_and_crash_class() {
+        let segv = FailureKind::Signal("SIGSEGV".to_string());
+        assert_eq!(segv.signal_name(), Some("SIGSEGV"));
+        assert_eq!(FailureKind::Timeout.signal_name(), None);
+        assert!(segv.is_crash());
+        assert!(FailureKind::Panic.is_crash());
+        assert!(FailureKind::Timeout.is_crash());
+        assert!(FailureKind::Crashed.is_crash());
+        assert!(!FailureKind::Unknown.is_crash());
+        assert!(!FailureKind::Assertion.is_crash());
+    }
+
+    #[test]
+    fn failure_kind_signal_rkyv_roundtrip() {
+        let original = FailureKind::Signal("SIGABRT".to_string());
+        let bytes = rkyv::to_bytes::<rancor::Error>(&original).unwrap();
+        let decoded = rkyv::from_bytes::<FailureKind, rancor::Error>(&bytes).unwrap();
+        assert_eq!(original, decoded);
     }
 
     #[test]
