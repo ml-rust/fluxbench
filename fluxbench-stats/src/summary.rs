@@ -5,7 +5,7 @@
 //! Outlier detection still runs. It reports counts, fences, and a separate trimmed mean.
 
 use crate::outliers::{OutlierAnalysis, OutlierMethod, detect_outliers};
-use crate::percentiles::compute_percentile;
+use crate::percentiles::{compute_percentile, percentile_of_sorted, sorted_samples};
 
 /// Comprehensive summary statistics
 #[derive(Debug, Clone)]
@@ -108,7 +108,8 @@ pub fn compute_summary(samples: &[f64], outlier_method: OutlierMethod) -> Summar
     let cleaned = &analysis.cleaned_samples;
 
     let mean = all.iter().sum::<f64>() / all.len() as f64;
-    let median = compute_percentile(all, 50.0);
+    let sorted = sorted_samples(all);
+    let median = percentile_of_sorted(&sorted, 50.0);
 
     let std_dev = if all.len() < 2 {
         0.0
@@ -137,10 +138,10 @@ pub fn compute_summary(samples: &[f64], outlier_method: OutlierMethod) -> Summar
 
     // Outliers stay in the tails: they are the tail signal.
     let p50 = median;
-    let p90 = compute_percentile(all, 90.0);
-    let p95 = compute_percentile(all, 95.0);
-    let p99 = compute_percentile(all, 99.0);
-    let p999 = compute_percentile(all, 99.9);
+    let p90 = percentile_of_sorted(&sorted, 90.0);
+    let p95 = percentile_of_sorted(&sorted, 95.0);
+    let p99 = percentile_of_sorted(&sorted, 99.0);
+    let p999 = percentile_of_sorted(&sorted, 99.9);
 
     // Fisher's definitions over all samples
     let (skewness, kurtosis) = if all.len() < 3 || std_dev < f64::EPSILON {

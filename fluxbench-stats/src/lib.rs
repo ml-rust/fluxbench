@@ -22,7 +22,10 @@ pub use comparison::{
     SummaryComparison, cohens_d, compare_distributions, compare_summaries, interpret_effect_size,
 };
 pub use outliers::{OutlierAnalysis, OutlierMethod, detect_outliers};
-pub use percentiles::{Percentiles, compute_percentile, compute_percentiles};
+pub use percentiles::{
+    Percentiles, compute_percentile, compute_percentiles, compute_percentiles_sorted,
+    percentile_of_sorted,
+};
 pub use summary::{CyclesStatistics, SummaryStatistics, compute_cycles_stats, compute_summary};
 
 /// Threshold below which BCa method is used instead of percentile

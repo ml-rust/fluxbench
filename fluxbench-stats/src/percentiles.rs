@@ -35,38 +35,54 @@ pub struct Percentiles {
 /// println!("P95: {}", p95);
 /// ```
 pub fn compute_percentile(samples: &[f64], percentile: f64) -> f64 {
-    if samples.is_empty() {
+    percentile_of_sorted(&sorted_samples(samples), percentile)
+}
+
+/// Copy `samples` into ascending order. NaN compares equal to every value.
+pub(crate) fn sorted_samples(samples: &[f64]) -> Vec<f64> {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted
+}
+
+/// Compute a single percentile from ascending `sorted` samples.
+///
+/// Uses linear interpolation between nearest ranks.
+/// Returns 0.0 for an empty slice. The caller sorts once and reuses the slice.
+pub fn percentile_of_sorted(sorted: &[f64], percentile: f64) -> f64 {
+    let n = sorted.len();
+    if n == 0 {
         return 0.0;
     }
 
-    if samples.len() == 1 {
-        return samples[0];
-    }
-
-    let mut sorted = samples.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-    let n = sorted.len();
-    let p = percentile / 100.0;
-
     // Linear interpolation between nearest ranks
-    let rank = p * (n - 1) as f64;
-    let lower_idx = rank.floor() as usize;
+    let rank = percentile / 100.0 * (n - 1) as f64;
+    let lower_idx = (rank.floor() as usize).min(n - 1);
     let upper_idx = (lower_idx + 1).min(n - 1);
-    let fraction = rank - lower_idx as f64;
+    let fraction = (rank - lower_idx as f64).min(1.0);
 
     sorted[lower_idx] + fraction * (sorted[upper_idx] - sorted[lower_idx])
 }
 
+/// Compute several percentiles from ascending `sorted` samples.
+///
+/// The result has one value per entry of `ps`, in the same order.
+pub fn compute_percentiles_sorted(sorted: &[f64], ps: &[f64]) -> Vec<f64> {
+    ps.iter()
+        .map(|&p| percentile_of_sorted(sorted, p))
+        .collect()
+}
+
 /// Compute all standard percentiles
 pub fn compute_percentiles(samples: &[f64]) -> Percentiles {
+    let sorted = sorted_samples(samples);
     Percentiles {
-        p50: compute_percentile(samples, 50.0),
-        p75: compute_percentile(samples, 75.0),
-        p90: compute_percentile(samples, 90.0),
-        p95: compute_percentile(samples, 95.0),
-        p99: compute_percentile(samples, 99.0),
-        p999: compute_percentile(samples, 99.9),
+        p50: percentile_of_sorted(&sorted, 50.0),
+        p75: percentile_of_sorted(&sorted, 75.0),
+        p90: percentile_of_sorted(&sorted, 90.0),
+        p95: percentile_of_sorted(&sorted, 95.0),
+        p99: percentile_of_sorted(&sorted, 99.0),
+        p999: percentile_of_sorted(&sorted, 99.9),
     }
 }
 
@@ -123,5 +139,34 @@ mod tests {
         assert!(percentiles.p50 > 49.0 && percentiles.p50 < 51.0);
         assert!(percentiles.p90 > 89.0 && percentiles.p90 < 91.0);
         assert!(percentiles.p99 > 98.0 && percentiles.p99 < 100.0);
+    }
+
+    #[test]
+    fn sorted_helpers_match_compute_percentile() {
+        let samples = vec![9.0, 1.0, 5.0, 3.0, 7.0, 2.0, 8.0];
+        let sorted = sorted_samples(&samples);
+        let ps = [0.0, 25.0, 50.0, 90.0, 99.9, 100.0];
+        let got = compute_percentiles_sorted(&sorted, &ps);
+        assert_eq!(got.len(), ps.len());
+        for (p, value) in ps.iter().zip(got) {
+            assert_eq!(value, compute_percentile(&samples, *p));
+        }
+    }
+
+    #[test]
+    fn percentile_of_sorted_handles_empty_and_single() {
+        assert_eq!(percentile_of_sorted(&[], 50.0), 0.0);
+        assert_eq!(percentile_of_sorted(&[42.0], 99.0), 42.0);
+        assert!(
+            compute_percentiles_sorted(&[], &[50.0, 90.0])
+                .iter()
+                .all(|v| *v == 0.0)
+        );
+    }
+
+    #[test]
+    fn compute_percentiles_uses_interpolation() {
+        let p = compute_percentiles(&[4.0, 1.0, 3.0, 2.0]);
+        assert!((p.p50 - 2.5).abs() < 1e-12);
     }
 }
