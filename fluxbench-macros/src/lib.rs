@@ -58,6 +58,11 @@ mod verify;
 /// async fn async_benchmark(b: &mut Bencher) { ... }
 /// ```
 ///
+/// `args = [..]` runs one benchmark per value. The function takes the value as a second argument.
+/// Each ID is `id@value`.
+/// `depends_on = [..]` lists benchmark IDs that run first.
+/// `enable_time` and `enable_io` (default `true`) set the tokio drivers of the async runtime.
+///
 /// `budget`, `warmup`, and `measurement` take a number with a unit: `ns`, `us`, `ms`, or `s`.
 /// A mean per-iteration time above `budget` fails the benchmark.
 /// `throughput_bytes` and `throughput_elements` take an integer above 0. Set at most one.

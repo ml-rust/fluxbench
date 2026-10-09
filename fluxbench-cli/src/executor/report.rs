@@ -118,7 +118,7 @@ pub fn build_report(
                     throughput_elements_per_sec: elements_per_sec,
                     alloc_bytes: result.alloc_bytes,
                     alloc_count: result.alloc_count,
-                    // CPU cycles from RDTSC (x86_64 only, 0 on other platforms)
+                    // Cycles from RDTSCP (x86_64) or CNTVCT_EL0 (aarch64). 0 on other platforms.
                     mean_cycles: cycles_stats.mean_cycles,
                     median_cycles: cycles_stats.median_cycles,
                     min_cycles: cycles_stats.min_cycles,

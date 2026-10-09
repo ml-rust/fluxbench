@@ -1,6 +1,6 @@
 //! IPC Message Types
 //!
-//! All messages are serialized with rkyv for zero-copy deserialization.
+//! All messages are serialized with rkyv. The reader validates and deserializes each frame.
 
 use crate::Throughput;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};

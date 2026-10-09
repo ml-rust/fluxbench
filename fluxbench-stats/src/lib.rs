@@ -1,7 +1,7 @@
 #![warn(missing_docs)]
 //! FluxBench Statistical Engine
 //!
-//! Provides robust statistical analysis for benchmark results including:
+//! Provides statistical analysis for benchmark results, including:
 //! - Bootstrap resampling with BCa (Bias-Corrected and Accelerated) intervals
 //! - Outlier detection via IQR method
 //! - Percentile calculation preserving tail latency signals
@@ -31,7 +31,8 @@ pub use summary::{CyclesStatistics, SummaryStatistics, compute_cycles_stats, com
 /// Threshold below which BCa method is used instead of percentile
 pub const BCA_THRESHOLD: usize = 100;
 
-/// Default number of bootstrap iterations
+/// Default number of bootstrap iterations for `BootstrapConfig`.
+/// The CLI default is 10,000 (`runner.bootstrap_iterations`).
 pub const DEFAULT_BOOTSTRAP_ITERATIONS: usize = 100_000;
 
 /// Default confidence level (95%)

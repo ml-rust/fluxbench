@@ -3,7 +3,7 @@
 pub(crate) const DEFAULT_TOML: &str = r#"# FluxBench Configuration
 # https://github.com/ml-rust/fluxbench
 #
-# Priority: macro attribute > CLI flag > flux.toml > built-in default.
+# Priority: #[bench] attribute > #[group] attribute > CLI flag > flux.toml > built-in default.
 # Unknown keys are an error.
 
 [runner]

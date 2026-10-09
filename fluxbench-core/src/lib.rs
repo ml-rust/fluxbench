@@ -3,9 +3,10 @@
 //!
 //! This crate provides the execution environment for benchmarks:
 //! - `Bencher` struct for iteration-based benchmarking
-//! - High-precision timing (RDTSC with Instant fallback)
+//! - Timing: `std::time::Instant` per timed region, with the empty-timer overhead subtracted.
+//!   Cycle counts come from RDTSCP (x86_64) or CNTVCT_EL0 (aarch64), and are 0 elsewhere
 //! - Global allocator interceptor for memory tracking
-//! - CPU affinity pinning for stable TSC readings
+//! - CPU affinity pinning for stable cycle-counter readings
 //!
 //! The `async` feature (default) adds `iter_async` and `drive_async_body` on tokio.
 //! Without it, the crate has no tokio dependency.

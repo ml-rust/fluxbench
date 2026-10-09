@@ -5,14 +5,14 @@
 //!
 //! FluxBench provides a next-generation benchmarking platform:
 //! - **Process Isolation**: Crash-resilient "Fail-Late" architecture; panicking benchmarks don't crash the suite
-//! - **Zero-Copy IPC**: Efficient supervisor-worker communication using rkyv serialization
+//! - **Binary IPC**: Supervisor-worker messages use length-prefixed rkyv frames
 //! - **Statistical Rigor**: Bootstrap resampling with BCa (bias-corrected and accelerated) confidence intervals
 //! - **CI Integration**: Severity levels (critical/warning/info), GitHub Actions summaries, baseline comparison
 //! - **Algebraic Verification**: Performance assertions directly in code with mathematical expressions
 //! - **Synthetic Metrics**: Compute derived metrics from benchmark results
 //! - **Multi-Way Comparisons**: Generate comparison tables and series charts
 //! - **Allocation Tracking**: `TrackingAllocator` measures heap usage per iteration
-//! - **High-Precision Timing**: RDTSC cycle counting on x86_64 with Instant fallback
+//! - **Timing**: `Instant` per timed region with timer overhead subtracted. Cycle counts use RDTSCP (x86_64) or CNTVCT_EL0 (aarch64), else 0
 //!
 //! ## Quick Start
 //!

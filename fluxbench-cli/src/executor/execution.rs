@@ -91,7 +91,9 @@ pub struct ExecutionConfig {
     pub iters_per_sample: Option<u64>,
     /// Track allocations
     pub track_allocations: bool,
-    /// Number of bootstrap iterations for statistics
+    /// Number of bootstrap iterations for statistics.
+    /// `ExecutionConfig::default` holds 100,000. The CLI always replaces it with
+    /// `runner.bootstrap_iterations` (default 10,000).
     pub bootstrap_iterations: usize,
     /// Confidence level for intervals
     pub confidence_level: f64,
@@ -199,7 +201,7 @@ impl Default for ExecutionConfig {
             sample_count: fluxbench_core::DEFAULT_SAMPLE_COUNT,
             iters_per_sample: None,
             track_allocations: true,
-            bootstrap_iterations: 100_000, // Matches Criterion default
+            bootstrap_iterations: 100_000, // Library default. The CLI sets `runner.bootstrap_iterations` (default 10000).
             confidence_level: 0.95,
         }
     }

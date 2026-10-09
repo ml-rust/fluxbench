@@ -1,8 +1,8 @@
 #![warn(missing_docs)]
 //! FluxBench IPC Protocol
 //!
-//! Zero-copy serialization protocol for supervisor-worker communication.
-//! Uses rkyv for efficient binary serialization with no parsing overhead.
+//! Binary protocol for supervisor-worker communication.
+//! Messages are length-prefixed rkyv frames. The reader validates and deserializes each frame.
 //! Handles benchmark configuration, sample collection, and heartbeat coordination.
 
 mod framing;

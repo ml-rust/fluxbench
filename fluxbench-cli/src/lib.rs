@@ -16,7 +16,7 @@
 //! }
 //!
 //! fn main() {
-//!     fluxbench_cli::run();
+//!     fluxbench_cli::run().unwrap();
 //! }
 //! ```
 

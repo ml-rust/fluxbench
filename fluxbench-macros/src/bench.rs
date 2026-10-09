@@ -317,7 +317,7 @@ fn validate_signature(func: &ItemFn, has_args: bool) -> syn::Result<()> {
 /// Convert an expression to a safe, human-readable label for benchmark IDs.
 ///
 /// Collapses whitespace and escapes path-unsafe characters so IDs are valid
-/// in file paths, URLs, and don't conflict with the `base_id/label` separator.
+/// in file paths, URLs, and don't conflict with the `base_id@label` separator.
 ///
 /// Examples: `10` → `"10"`, `1000` → `"1000"`, `vec![1, 2]` → `"vec![1,2]"`
 fn expr_to_label(expr: &syn::Expr) -> String {

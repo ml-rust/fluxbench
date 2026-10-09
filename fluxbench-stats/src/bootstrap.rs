@@ -11,7 +11,8 @@ use thiserror::Error;
 /// Bootstrap configuration
 #[derive(Debug, Clone)]
 pub struct BootstrapConfig {
-    /// Number of bootstrap iterations (default: 100,000)
+    /// Number of bootstrap iterations (default: 100,000).
+    /// The CLI default is 10,000 (`runner.bootstrap_iterations` in `flux.toml`).
     pub iterations: usize,
     /// Confidence level (default: 0.95 for 95% CI)
     pub confidence_level: f64,

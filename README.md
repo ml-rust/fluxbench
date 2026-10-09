@@ -19,7 +19,7 @@ fn my_benchmark(b: &mut Bencher) {
 }
 ```
 
-Run `cargo bench` and you get bootstrap confidence intervals, percentile stats (p50–p999), outlier detection, and cycle-accurate timing — all automatic.
+Run `cargo bench` and you get bootstrap confidence intervals, percentile stats (p50–p999), outlier detection, and cycle counts — all automatic. Timing reads `Instant` once per timed batch and subtracts the measured empty-timer overhead. Cycle counts come from RDTSCP (x86_64) or CNTVCT_EL0 (aarch64), else 0.
 
 **Then compose what you need:**
 
@@ -43,11 +43,11 @@ Each attribute is independent. Use one, use all, add them later — your benchma
 | Feature                                                 | Description                                                          |
 | ------------------------------------------------------- | -------------------------------------------------------------------- |
 | [Crash isolation](#crash-isolation)                     | Supervisor-worker architecture — panics never terminate the suite    |
-| [Bootstrap statistics](#custom-bootstrap-configuration) | BCa bootstrap CIs, RDTSC cycle counting, outlier detection, p50–p999 |
+| [Bootstrap statistics](#custom-bootstrap-configuration) | BCa bootstrap CIs, cycle counts (RDTSCP, CNTVCT_EL0), outlier detection, p50–p999 |
 | [Verification](#verification-macros)                    | `#[verify(expr = "bench_a < bench_b", severity = "critical")]`       |
 | [Synthetic metrics](#synthetic-metrics)                 | `#[synthetic(formula = "bench_a / bench_b", unit = "x")]`            |
 | [Comparisons](#comparisons)                             | `#[compare(...)]` — tables and series charts vs baseline             |
-| [Output formats](#output-formats)                       | Human, JSON, HTML, CSV, GitHub Actions summary                       |
+| [Output formats](#output-formats)                       | Human, JSON, HTML, CSV, GitHub summary, github-action-benchmark JSON |
 | [CI integration](#ci-integration)                       | Exit code 1 on critical failures, `flux.toml` severity levels        |
 | [Allocation tracking](#allocation-tracking)             | Per-iteration heap bytes and count                                   |
 | [Throughput](#throughput)                               | Bytes per second (MiB/s, GiB/s) or elements per second               |
@@ -275,6 +275,32 @@ fn disk_write(b: &mut Bencher) {
 
 Then run with: `cargo bench -- --tag network` or `cargo bench -- --skip-tag network`
 
+### Bench Attributes
+
+| Attribute                                          | Meaning                                                              |
+| -------------------------------------------------- | -------------------------------------------------------------------- |
+| `id`                                               | Benchmark ID. Default: the function name.                            |
+| `group`                                            | Group name. Default: `default`.                                      |
+| `tags`                                             | Tags for `--tag` and `--skip-tag`.                                   |
+| `severity`                                         | `critical`, `warning`, or `info`. Default: `info`.                   |
+| `threshold`                                        | Regression threshold in percent. 0 uses the global value.            |
+| `budget`                                           | Time budget for the mean per iteration. See [Time Budget](#time-budget). |
+| `warmup`, `measurement`                            | Per-benchmark durations, e.g. `"500ms"`.                             |
+| `samples`                                          | Fixed mode: N samples of one iteration each, no warmup.              |
+| `sample_count`, `iters_per_sample`                 | Target sample count. Fixed iterations per sample.                    |
+| `min_iterations`, `max_iterations`                 | Bounds on total measurement iterations.                              |
+| `throughput_bytes`, `throughput_elements`          | Work per call. See [Throughput](#throughput).                        |
+| `depends_on`                                       | Benchmark IDs that run before this one, e.g. `depends_on = ["a"]`.   |
+| `args`                                             | Parameter values. See below.                                         |
+| `runtime`, `worker_threads`, `enable_time`, `enable_io` | Async runtime. See [Async Benchmarks](#async-benchmarks).       |
+
+`args = [..]` runs one benchmark per value. The function takes the value as a second argument. Each ID is `id@value`:
+
+```rust
+#[bench(group = "scaling", args = [100, 1000])]
+fn linear_scan(b: &mut Bencher, n: u32) { /* IDs: linear_scan@100, linear_scan@1000 */ }
+```
+
 ### Describing Groups
 
 `#[group]` describes a group that `#[bench(group = ...)]` names:
@@ -356,6 +382,7 @@ async fn async_with_setup(b: &mut Bencher) {
 ```
 
 - Runtimes: `"current_thread"` (default) or `"multi_thread"`. Any other value is a compile error.
+- `enable_time` and `enable_io` (both default `true`) turn the tokio timer and IO drivers on or off.
 - `worker_threads` must be at least 1. It needs `runtime = "multi_thread"`, else it is a compile error.
 - The runtime builds once per benchmark, outside the timer.
 - `iter_async` times creating and awaiting each future. Each batch runs in one `block_on`.
@@ -518,26 +545,43 @@ fn vec_sum_1000(b: &mut Bencher) {
     b.iter(|| data.iter().sum::<i64>());
 }
 
+#[bench(group = "scaling")]
+fn vec_fold_100(b: &mut Bencher) {
+    let data: Vec<i64> = (0..100).collect();
+    b.iter(|| data.iter().fold(0, |a, x| a + x));
+}
+
+#[bench(group = "scaling")]
+fn vec_fold_1000(b: &mut Bencher) {
+    let data: Vec<i64> = (0..1000).collect();
+    b.iter(|| data.iter().fold(0, |a, x| a + x));
+}
+
 #[compare(
     id = "scale_100",
     title = "Vector Sum Scaling",
-    benchmarks = ["bench_vec_sum_100"],
+    benchmarks = ["vec_sum_100", "vec_fold_100"],
     group = "vec_scaling",
-    x = "100"
+    x = "100",
+    series = ["sum()", "fold()"]
 )]
 struct Scale100;
 
 #[compare(
     id = "scale_1000",
     title = "Vector Sum Scaling",
-    benchmarks = ["bench_vec_sum_1000"],
+    benchmarks = ["vec_sum_1000", "vec_fold_1000"],
     group = "vec_scaling",
-    x = "1000"
+    x = "1000",
+    series = ["sum()", "fold()"]
 )]
 struct Scale1000;
 ```
 
-Multiple `#[compare]` with the same `group` combine into one chart.
+- Multiple `#[compare]` with the same `group` combine into one chart.
+- Each `#[compare]` needs at least 2 benchmarks with data. Otherwise it produces no output.
+- `x` places the point on the x axis. The chart sorts points by `x` as a number.
+- `series` names the lines by position. Without it, the lines use the benchmark IDs of the first `#[compare]`.
 
 ## CLI Usage
 
@@ -571,6 +615,7 @@ cargo bench -- --samples 500                   # Fixed mode: 500 one-iteration s
 cargo bench -- --min-iterations 100            # Minimum total measurement iterations
 cargo bench -- --isolated=false                # In-process mode
 cargo bench -- --worker-timeout 2m             # Worker timeout; a bare number means seconds
+cargo bench -- --threads 1                     # Statistics threads (0 = all cores, the default)
 
 # Output formats: human, json, github-summary (alias github), github-action, csv, html
 cargo bench -- --format json --output results.json   # ./results.json, or <output.directory>/results.json when set
@@ -625,8 +670,8 @@ bootstrap_iterations = 1000  # Bootstrap resamples for CIs; 0 skips the bootstra
 confidence_level = 0.95      # Confidence level, between 0 and 1 exclusive (default: 0.95)
 # sample_count = 100         # Target sample count, minimum 2, no upper cap (default: 100)
 # samples = 5                # Fixed mode: N samples of one iteration each, no warmup, minimum 2
-# min_iterations = 100       # Minimum total measurement iterations (default: auto-tuned)
-# max_iterations = 1000000   # Maximum total measurement iterations, >= min_iterations (default: auto-tuned)
+# min_iterations = 100       # Minimum total measurement iterations (default: unset)
+# max_iterations = 1000000   # Maximum total measurement iterations, >= min_iterations (default: unset)
 # jobs = 4                   # Parallel isolated workers, minimum 1 (default: 1)
 # pin_cpus = false           # Pin each isolated worker to its own CPU (default: true)
 ```
@@ -809,13 +854,25 @@ struct MeanChart;
 
 ### GitHub Summary
 
-Renders verification results in GitHub Actions workflow:
+Renders Markdown for a GitHub Actions workflow. Sections: Summary, Baseline Comparison (with a baseline), Critical Benchmarks, Throughput, and Verifications.
 
 ```bash
 cargo bench -- --format github-summary >> $GITHUB_STEP_SUMMARY
 ```
 
 A Throughput table lists each benchmark with a byte or element rate. It is absent when no benchmark has one.
+
+### GitHub Action
+
+`--format github-action` writes a JSON array for [github-action-benchmark](https://github.com/benchmark-action/github-action-benchmark) with `tool: 'customSmallerIsBetter'`:
+
+```bash
+cargo bench -- --format github-action --output output.json
+```
+
+- One entry per passed benchmark, with `name` (the benchmark ID), `unit`, `value` (mean time), `range` (`± std dev`), and `extra`.
+- `extra` holds median, min, max, p95, p99, samples, and ops per second.
+- Failed, crashed, and skipped benchmarks have no entry.
 
 ## Advanced Usage
 
@@ -836,7 +893,7 @@ fn vec_allocation(b: &mut Bencher) {
     b.iter(|| vec![1, 2, 3, 4, 5]);
 }
 
-fn main() { fluxbench::run(); }
+fn main() { fluxbench::run().unwrap(); }
 ```
 
 Results will include allocation metrics for each benchmark:

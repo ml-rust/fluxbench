@@ -35,7 +35,7 @@ fluxbench-macros = { path = "fluxbench-macros", version = "0.1.0" }
 fluxbench-report = { path = "fluxbench-report", version = "0.1.0" }
 fluxbench-stats = { path = "fluxbench-stats", version = "0.1.0" }
 
-# Serialization (Zero-Copy IPC)
+# Serialization (rkyv IPC)
 rkyv = "0.8"
 
 # CLI

@@ -9,7 +9,7 @@
 //! ## Usage
 //!
 //! ```bash
-//! cargo fluxbench --format github-action -o output.json
+//! cargo bench -- --format github-action --output output.json
 //! ```
 //!
 //! Then in your GitHub Actions workflow:

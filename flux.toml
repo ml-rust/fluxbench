@@ -2,7 +2,7 @@
 # https://github.com/ml-rust/fluxbench
 #
 # This file is optional. Every key has a built-in default.
-# Priority: macro attribute > CLI flag > flux.toml > built-in default.
+# Priority: #[bench] attribute > #[group] attribute > CLI flag > flux.toml > built-in default.
 # FluxBench finds this file by walking up from the current directory.
 # Unknown keys, bad values, and malformed TOML are errors.
 

@@ -1,6 +1,6 @@
 //! Length-Prefixed Frame Encoding
 //!
-//! Provides reliable message boundaries over stream-based IPC (stdin/stdout).
+//! Provides reliable message boundaries over stream-based IPC (inherited pipes, or stdin/stdout off Unix).
 
 use rkyv::api::high::{HighDeserializer, HighSerializer, HighValidator};
 use rkyv::ser::allocator::ArenaHandle;

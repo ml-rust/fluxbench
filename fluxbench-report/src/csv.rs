@@ -200,8 +200,8 @@ fn push_record<'a>(csv: &mut String, fields: impl Iterator<Item = Cow<'a, str>>)
 /// - `p50_ns` / `p95_ns` / `p99_ns` - Percentiles
 /// - `samples` - Number of samples collected
 /// - `alloc_bytes` / `alloc_count` - Allocation metrics
-/// - `mean_cycles` / `median_cycles` - CPU cycle metrics (x86_64 only)
-/// - `cycles_per_ns` - CPU frequency estimate
+/// - `mean_cycles` / `median_cycles` - cycle metrics (x86_64 and aarch64, 0 elsewhere)
+/// - `cycles_per_ns` - Counter ticks per nanosecond
 /// - `p90_ns` / `p999_ns` - Percentiles
 /// - `ci_lower_ns` / `ci_upper_ns` - Confidence interval bounds (empty when the bootstrap is skipped)
 /// - `trimmed_mean_ns` - Mean without detected outliers (empty when absent)

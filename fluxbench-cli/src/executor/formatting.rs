@@ -104,7 +104,7 @@ pub fn format_human_output(report: &Report) -> String {
                         metrics.alloc_bytes, metrics.alloc_count
                     ));
                 }
-                // Show CPU cycles if available (x86_64 only)
+                // Show cycles when the platform has a counter (x86_64 or aarch64)
                 if metrics.mean_cycles > 0.0 {
                     output.push_str(&format!(
                         "      cycles: mean {:.0}  median {:.0}  ({:.2} GHz)\n",

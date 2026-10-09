@@ -252,13 +252,13 @@ pub struct BenchmarkMetrics {
     pub alloc_bytes: u64,
     /// Mean allocation count per iteration
     pub alloc_count: u64,
-    /// Mean CPU cycles (x86_64 only, 0 on other platforms)
+    /// Mean CPU cycles (x86_64 and aarch64, 0 on other platforms)
     pub mean_cycles: f64,
-    /// Median CPU cycles (x86_64 only, 0 on other platforms)
+    /// Median CPU cycles (x86_64 and aarch64, 0 on other platforms)
     pub median_cycles: f64,
-    /// Minimum CPU cycles (x86_64 only, 0 on other platforms)
+    /// Minimum CPU cycles (x86_64 and aarch64, 0 on other platforms)
     pub min_cycles: u64,
-    /// Maximum CPU cycles (x86_64 only, 0 on other platforms)
+    /// Maximum CPU cycles (x86_64 and aarch64, 0 on other platforms)
     pub max_cycles: u64,
     /// CPU cycles per nanosecond
     pub cycles_per_ns: f64,

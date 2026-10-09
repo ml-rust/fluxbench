@@ -6,6 +6,8 @@
 //! - GitHub Summary (Markdown for $GITHUB_STEP_SUMMARY)
 //! - CSV (spreadsheet-compatible)
 //! - HTML (single page with group sections and SVG charts)
+//! - github-action-benchmark JSON (`customSmallerIsBetter`)
+//! - Human (terminal text)
 
 mod csv;
 mod github;
