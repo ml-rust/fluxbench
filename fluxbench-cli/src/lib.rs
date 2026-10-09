@@ -23,6 +23,7 @@
 mod config;
 mod executor;
 mod planner;
+mod status;
 mod supervisor;
 
 pub use config::*;
@@ -398,7 +399,7 @@ fn run_benchmarks(
                 );
             }
         }
-        println!("No benchmarks found.");
+        eprintln!("No benchmarks found.");
         return Ok(());
     }
 
@@ -423,13 +424,7 @@ fn run_benchmarks(
     } else {
         " (in-process)"
     };
-    println!(
-        "Running {} benchmarks{}, {} threads, {} worker(s)...\n",
-        benchmarks.len(),
-        mode_str,
-        threads_str,
-        jobs
-    );
+    status::print_run_banner(benchmarks.len(), mode_str, &threads_str, jobs);
 
     let start_time = Instant::now();
 
@@ -523,7 +518,7 @@ fn run_benchmarks(
 
     // Emit GitHub Actions annotations if enabled
     if config.ci.github_annotations {
-        emit_github_annotations(&report);
+        status::print_github_annotations(&report);
     }
 
     // Generate output
@@ -540,7 +535,7 @@ fn run_benchmarks(
     if let Some(ref path) = cli.output {
         let mut file = std::fs::File::create(path)?;
         file.write_all(output.as_bytes())?;
-        println!("Report written to: {}", path.display());
+        eprintln!("Report written to: {}", path.display());
     } else {
         print!("{}", output);
     }
@@ -612,15 +607,15 @@ fn compare_benchmarks(
         );
     }
 
-    println!("Comparing against baseline: {}", baseline_path.display());
-    println!("Git ref: {} ({})\n", git_ref, resolved_git_ref);
+    eprintln!("Comparing against baseline: {}", baseline_path.display());
+    eprintln!("Git ref: {} ({})\n", git_ref, resolved_git_ref);
 
     // Run current benchmarks
     let all_benchmarks: Vec<_> = inventory::iter::<BenchmarkDef>.into_iter().collect();
     let benchmarks = filter_benchmarks(cli, &all_benchmarks);
 
     if benchmarks.is_empty() {
-        println!("No benchmarks found.");
+        eprintln!("No benchmarks found.");
         return Ok(());
     }
 
@@ -652,7 +647,7 @@ fn compare_benchmarks(
 
     // Emit GitHub Actions annotations if enabled
     if config.ci.github_annotations {
-        emit_github_annotations(&report);
+        status::print_github_annotations(&report);
     }
 
     // Generate output
@@ -668,7 +663,7 @@ fn compare_benchmarks(
     if let Some(ref path) = cli.output {
         let mut file = std::fs::File::create(path)?;
         file.write_all(output.as_bytes())?;
-        println!("Report written to: {}", path.display());
+        eprintln!("Report written to: {}", path.display());
     } else {
         print!("{}", output);
     }
@@ -834,76 +829,6 @@ fn resolve_baseline_path(
             )
         }
         None => None,
-    }
-}
-
-/// Emit `::error::` and `::warning::` annotations for GitHub Actions.
-///
-/// These appear inline on PR diffs when running in GitHub Actions CI.
-fn emit_github_annotations(report: &fluxbench_report::Report) {
-    // Annotate crashed/failed benchmarks
-    for result in &report.results {
-        match result.status {
-            fluxbench_report::BenchmarkStatus::Crashed => {
-                let msg = result
-                    .failure
-                    .as_ref()
-                    .map(|f| f.message.as_str())
-                    .unwrap_or("benchmark crashed");
-                println!(
-                    "::error file={},line={}::{}: {}",
-                    result.file, result.line, result.id, msg
-                );
-            }
-            fluxbench_report::BenchmarkStatus::Failed => {
-                let msg = result
-                    .failure
-                    .as_ref()
-                    .map(|f| f.message.as_str())
-                    .unwrap_or("benchmark failed");
-                println!(
-                    "::error file={},line={}::{}: {}",
-                    result.file, result.line, result.id, msg
-                );
-            }
-            _ => {}
-        }
-
-        // Annotate significant regressions
-        if let Some(cmp) = &result.comparison {
-            if cmp.is_significant && cmp.relative_change > 0.0 {
-                println!(
-                    "::error file={},line={}::{}: regression {:+.1}% ({} → {})",
-                    result.file,
-                    result.line,
-                    result.id,
-                    cmp.relative_change,
-                    format_duration(cmp.baseline_mean_ns),
-                    result
-                        .metrics
-                        .as_ref()
-                        .map(|m| format_duration(m.mean_ns))
-                        .unwrap_or_default(),
-                );
-            }
-        }
-    }
-
-    // Annotate verification failures
-    for v in &report.verifications {
-        match &v.status {
-            fluxbench_logic::VerificationStatus::Failed => {
-                let level = match v.severity {
-                    fluxbench_core::Severity::Critical => "error",
-                    _ => "warning",
-                };
-                println!("::{}::{}: {}", level, v.id, v.message);
-            }
-            fluxbench_logic::VerificationStatus::Error { message } => {
-                println!("::error::{}: evaluation error: {}", v.id, message);
-            }
-            _ => {}
-        }
     }
 }
 
