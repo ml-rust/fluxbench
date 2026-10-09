@@ -24,6 +24,8 @@ pub(crate) fn metrics(mean_ns: f64) -> BenchmarkMetrics {
         ci_upper_ns: Some(mean_ns + 3.0),
         ci_level: 0.95,
         throughput_ops_sec: Some(2000.5),
+        throughput_bytes_per_sec: None,
+        throughput_elements_per_sec: None,
         alloc_bytes: 64,
         alloc_count: 2,
         mean_cycles: 300.4,

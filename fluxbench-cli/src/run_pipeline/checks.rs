@@ -164,6 +164,7 @@ mod tests {
             backtrace: None,
             severity: fluxbench_core::Severity::Info,
             threshold: 0.0,
+            throughput: None,
         }
     }
 

@@ -1,6 +1,6 @@
 //! Measurement config, errors, and results.
 
-use fluxbench_ipc::{BenchmarkConfig, Sample};
+use fluxbench_ipc::{BenchmarkConfig, Sample, Throughput};
 
 /// Default number of samples to collect (matches Criterion)
 pub const DEFAULT_SAMPLE_COUNT: usize = fluxbench_ipc::DEFAULT_SAMPLE_COUNT as usize;
@@ -80,6 +80,7 @@ pub enum MeasureError {
     #[error("benchmark produced zero samples")]
     NoSamples,
     /// The async runtime did not build, or `iter_async` ran inside a runtime context.
+    /// Only the `async` feature produces it.
     #[error("async runtime error: {0}")]
     AsyncRuntime(String),
 }
@@ -100,4 +101,6 @@ pub struct BenchmarkResult {
     /// `true` when the hard deadline or a SIGTERM stop request ended measurement
     /// before `sample_count` samples
     pub truncated: bool,
+    /// Work per call the body set with `Bencher::throughput`. `None` without a call.
+    pub throughput: Option<Throughput>,
 }

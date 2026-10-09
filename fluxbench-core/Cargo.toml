@@ -10,12 +10,22 @@ keywords.workspace = true
 categories.workspace = true
 readme.workspace = true
 
+[features]
+default = ["async"]
+# `iter_async`, `drive_async_body`, and runtime attach on tokio. Off removes tokio.
+async = ["dep:tokio"]
+
 [dependencies]
 fluxbench-ipc.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 inventory.workspace = true
-tokio.workspace = true
+# `rt` and `sync` only: Runtime, Handle, task ids, and Notify.
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The async tests use timers, TCP, and multi-thread runtimes.
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "net"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

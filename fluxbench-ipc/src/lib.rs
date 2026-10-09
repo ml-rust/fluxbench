@@ -8,6 +8,7 @@
 mod framing;
 mod messages;
 mod ring_buffer;
+mod throughput;
 
 pub use framing::{FrameError, FrameReader, FrameWriter, MAX_FRAME_SIZE, read_frame, write_frame};
 pub use messages::{
@@ -15,6 +16,7 @@ pub use messages::{
     SupervisorCommand, WorkerCapabilities, WorkerMessage,
 };
 pub use ring_buffer::SampleRingBuffer;
+pub use throughput::Throughput;
 
 /// Protocol version for compatibility checking.
 ///
@@ -22,7 +24,8 @@ pub use ring_buffer::SampleRingBuffer;
 /// Version 3 adds `FailureKind::Signal(name)` and `FailureKind::Crashed`.
 /// Version 4 drops `BenchmarkConfig::fail_on_allocation`. The supervisor checks allocations.
 /// The worker streams sample batches during measurement.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// Version 5 adds `WorkerMessage::Complete::throughput`, the value `Bencher::throughput` set.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Env var the supervisor sets to the CPU index a worker pins to.
 ///

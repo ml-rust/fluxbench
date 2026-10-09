@@ -1,6 +1,7 @@
 //! `#[flux::bench]`: benchmark registration.
 
 use crate::attr;
+use crate::throughput::{self, ThroughputAttr};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::ItemFn;
@@ -39,6 +40,7 @@ pub fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn:
     let iters_per_sample_expr = attr::option(config.iters_per_sample);
     let min_iterations_expr = attr::option(config.min_iterations);
     let max_iterations_expr = attr::option(config.max_iterations);
+    let throughput_expr = throughput::tokens(config.throughput);
 
     // ── Parameterized path: generate one BenchmarkDef per arg value ──────
     if !config.args.is_empty() {
@@ -86,6 +88,7 @@ pub fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn:
                         iters_per_sample: #iters_per_sample_expr,
                         min_iterations: #min_iterations_expr,
                         max_iterations: #max_iterations_expr,
+                        throughput: #throughput_expr,
                         depends_on: &[#(#depends_on_tokens),*],
                     }
                 }
@@ -139,6 +142,7 @@ pub fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn:
                 iters_per_sample: #iters_per_sample_expr,
                 min_iterations: #min_iterations_expr,
                 max_iterations: #max_iterations_expr,
+                throughput: #throughput_expr,
                 depends_on: &[#(#depends_on_tokens),*],
             }
         }
@@ -148,29 +152,19 @@ pub fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn:
 /// Generate the wrapper body for an async benchmark.
 ///
 /// `body_call` creates the body future, for example `bench(bencher, arg)`.
-/// The wrapper builds one runtime and attaches it to the bencher.
+/// `fluxbench::__flux_async_bench!` builds one runtime and attaches it to the bencher.
 /// `drive_async_body` runs the body outside `block_on`, so `iter_async` can block per batch.
 /// A build error or a context error goes to the bencher. Nothing panics.
+/// Without the `async` feature of fluxbench, the call is a compile error that names the feature.
 fn generate_async_runner(config: &AsyncRuntimeConfig, body_call: TokenStream2) -> TokenStream2 {
     let (runtime_builder, runtime_config) = async_runtime_tokens(config);
 
     quote! {
-        let __flux_rt = match ::fluxbench::internal::tokio::runtime::Builder::#runtime_builder
-            #runtime_config
-            .build()
-        {
-            ::std::result::Result::Ok(__flux_rt) => ::std::sync::Arc::new(__flux_rt),
-            ::std::result::Result::Err(__flux_error) => {
-                bencher.attach_runtime_error(__flux_error.to_string());
-                return;
-            }
-        };
-        bencher.attach_runtime(::std::sync::Arc::clone(&__flux_rt));
-        if let ::std::result::Result::Err(__flux_error) =
-            ::fluxbench::internal::drive_async_body(&__flux_rt, #body_call)
-        {
-            bencher.record_error(__flux_error);
-        }
+        ::fluxbench::__flux_async_bench!(
+            bencher,
+            [#runtime_builder #runtime_config],
+            #body_call
+        );
     }
 }
 
@@ -213,6 +207,8 @@ struct BenchConfig {
     iters_per_sample: Option<u64>,
     min_iterations: Option<u64>,
     max_iterations: Option<u64>,
+    /// `throughput_bytes = N` or `throughput_elements = N`
+    throughput: Option<ThroughputAttr>,
     /// Parameterized benchmark args: `args = [10, 100, 1000]`
     args: Vec<syn::Expr>,
     /// Dependencies: `depends_on = ["bench_a", "bench_b"]`
@@ -264,6 +260,9 @@ fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
             "max_iterations" => config.max_iterations = attr::int(&meta)?,
             "args" => config.args = attr::expr_array(&meta)?,
             "depends_on" => config.depends_on = attr::string_array(&meta)?,
+            key if throughput::is_key(key) => {
+                throughput::parse(&meta, key, &mut config.throughput)?
+            }
             _ => return Err(attr::unknown(&meta, &name)),
         }
         Ok(())
@@ -468,14 +467,45 @@ mod tests {
     }
 
     #[test]
-    fn async_runner_drives_body_without_block_on_or_expect() {
+    fn async_runner_calls_the_feature_gated_facade_macro() {
         let config = AsyncRuntimeConfig::default();
         let tokens = generate_async_runner(&config, quote! { bench(bencher) }).to_string();
-        assert!(tokens.contains("drive_async_body"));
-        assert!(tokens.contains("attach_runtime"));
-        assert!(tokens.contains("attach_runtime_error"));
-        assert!(tokens.contains("new_current_thread"));
+        assert!(
+            tokens.contains(":: fluxbench :: __flux_async_bench !"),
+            "{tokens}"
+        );
+        assert!(tokens.contains("new_current_thread"), "{tokens}");
+        assert!(tokens.contains("enable_time"), "{tokens}");
+        assert!(tokens.contains("bench (bencher)"), "{tokens}");
+        assert!(!tokens.contains("tokio"), "{tokens}");
         assert!(!tokens.contains("block_on"));
         assert!(!tokens.contains("expect"));
+    }
+
+    #[test]
+    fn bench_config_parses_throughput() {
+        let config = parse_bench_config(quote!(throughput_bytes = 4096)).unwrap();
+        assert_eq!(config.throughput, Some(ThroughputAttr::Bytes(4096)));
+        let config = parse_bench_config(quote!(throughput_elements = 3)).unwrap();
+        assert_eq!(config.throughput, Some(ThroughputAttr::Elements(3)));
+        let tokens = throughput::tokens(config.throughput).to_string();
+        assert!(tokens.contains("Throughput :: Elements (3u64)"), "{tokens}");
+    }
+
+    #[test]
+    fn bench_config_rejects_both_throughput_keys() {
+        let err = parse_err(quote!(throughput_bytes = 1, throughput_elements = 2));
+        assert!(err.contains("mutually exclusive"), "{err}");
+        let err = parse_err(quote!(throughput_bytes = 1, throughput_bytes = 2));
+        assert!(err.contains("mutually exclusive"), "{err}");
+    }
+
+    #[test]
+    fn bench_config_rejects_zero_throughput() {
+        let err = parse_err(quote!(throughput_elements = 0));
+        assert!(
+            err.contains("`throughput_elements` must be above 0"),
+            "{err}"
+        );
     }
 }

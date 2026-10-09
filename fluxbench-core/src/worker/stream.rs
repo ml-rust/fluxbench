@@ -170,6 +170,7 @@ mod tests {
             .end(&WorkerMessage::Complete {
                 total_iterations: 5,
                 total_duration_nanos: 10,
+                throughput: None,
             })
             .expect("end succeeds");
         let msgs = messages(&buffer);

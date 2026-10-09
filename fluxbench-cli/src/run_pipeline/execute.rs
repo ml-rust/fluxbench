@@ -4,7 +4,8 @@
 
 use crate::executor::BenchExecutionResult;
 use crate::{
-    Cli, ExecutionConfig, Executor, FluxConfig, IsolatedExecutor, cpu_pin, run_config, status,
+    Cli, ExecutionConfig, Executor, FluxConfig, GroupConfigs, IsolatedExecutor, cpu_pin,
+    run_config, status,
 };
 use fluxbench_core::BenchmarkDef;
 use fluxbench_report::format_duration;
@@ -24,22 +25,24 @@ pub(crate) struct Execution {
 
 /// Run `benchmarks` with the executor that the CLI and flux.toml select.
 ///
+/// `groups` holds the merged `#[flux::group]` run config. It beats the CLI and flux.toml.
 /// Errors before any benchmark runs: a bad flux.toml duration, or a benchmark whose
 /// resolved run config fails [`fluxbench_ipc::BenchmarkConfig::validate`].
 pub(crate) fn execute(
     cli: &Cli,
     config: &FluxConfig,
     benchmarks: &[&'static BenchmarkDef],
+    groups: &GroupConfigs,
     jobs: usize,
 ) -> anyhow::Result<Execution> {
     let isolated = run_config::resolve_isolated(cli, config);
     let exec_config = run_config::build_execution_config(cli, config)?;
     let timeout_ns = if isolated {
-        worker_timeout_ns(cli, config, &exec_config, benchmarks)?
+        worker_timeout_ns(cli, config, &exec_config, benchmarks, groups)?
     } else {
         0
     };
-    check_run_configs(&exec_config, benchmarks, timeout_ns)?;
+    check_run_configs(&exec_config, benchmarks, groups, timeout_ns)?;
 
     if cli.threads > 0 {
         // A second call in one process keeps the first pool. That is harmless here.
@@ -81,6 +84,7 @@ pub(crate) fn execute(
         };
         IsolatedExecutor::new(exec_config.clone(), timeout, !cli.one_shot, jobs)
             .with_cpus(cpus)
+            .with_group_configs(groups.clone())
             .execute(benchmarks)
     } else {
         if jobs > 1 {
@@ -88,7 +92,9 @@ pub(crate) fn execute(
                 "Warning: --jobs currently applies only to isolated mode; running in-process serially."
             );
         }
-        Executor::new(exec_config.clone()).execute(benchmarks)
+        Executor::new(exec_config.clone())
+            .with_group_configs(groups.clone())
+            .execute(benchmarks)
     };
 
     let budgets = benchmarks
@@ -110,10 +116,11 @@ fn worker_timeout_ns(
     config: &FluxConfig,
     exec_config: &ExecutionConfig,
     benchmarks: &[&'static BenchmarkDef],
+    groups: &GroupConfigs,
 ) -> anyhow::Result<u64> {
     let configured = run_config::resolve_worker_timeout_ns(cli, config)?;
     let needs = benchmarks.iter().map(|b| {
-        let cfg = exec_config.resolve_for_benchmark(b);
+        let cfg = exec_config.resolve_for_benchmark(b, &groups.get(b.group));
         (b.id, run_config::required_timeout_ns(&cfg))
     });
     let timeout = run_config::clamp_worker_timeout(configured, needs);
@@ -133,16 +140,17 @@ fn worker_timeout_ns(
 fn check_run_configs(
     exec_config: &ExecutionConfig,
     benchmarks: &[&'static BenchmarkDef],
+    groups: &GroupConfigs,
     timeout_ns: u64,
 ) -> anyhow::Result<()> {
     for bench in benchmarks {
         exec_config
-            .resolve_for_benchmark(bench)
+            .resolve_for_benchmark(bench, &groups.get(bench.group))
             .to_ipc_config(Duration::from_nanos(timeout_ns))
             .validate()
             .map_err(|e| {
                 anyhow::anyhow!(
-                    "benchmark `{}` has an invalid run config: {e}. Fix the CLI flag, flux.toml [runner] key, or #[bench] attribute that sets it.",
+                    "benchmark `{}` has an invalid run config: {e}. Fix the CLI flag, flux.toml [runner] key, #[bench] attribute, or #[group] attribute that sets it.",
                     bench.id
                 )
             })?;
@@ -159,11 +167,16 @@ mod tests {
         Box::leak(Box::new(def))
     }
 
+    fn no_groups() -> GroupConfigs {
+        GroupConfigs::default()
+    }
+
     #[test]
     fn valid_configs_pass() {
         let benches = [leak(bench_def("a"))];
-        assert!(check_run_configs(&ExecutionConfig::default(), &benches, 60_000_000_000).is_ok());
-        assert!(check_run_configs(&ExecutionConfig::default(), &benches, 0).is_ok());
+        let cfg = ExecutionConfig::default();
+        assert!(check_run_configs(&cfg, &benches, &no_groups(), 60_000_000_000).is_ok());
+        assert!(check_run_configs(&cfg, &benches, &no_groups(), 0).is_ok());
     }
 
     #[test]
@@ -173,7 +186,7 @@ mod tests {
             warmup_time_ns: 0,
             ..Default::default()
         };
-        let err = check_run_configs(&cfg, &benches, 0)
+        let err = check_run_configs(&cfg, &benches, &no_groups(), 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("benchmark `needs_warmup`"), "{err}");
@@ -181,11 +194,37 @@ mod tests {
     }
 
     #[test]
-    fn timeout_below_measurement_is_an_error_without_the_clamp() {
-        let benches = [leak(bench_def("long"))];
-        let err = check_run_configs(&ExecutionConfig::default(), &benches, 1_000_000)
+    fn group_config_is_checked_too() {
+        let benches = [leak(BenchmarkDef {
+            group: "g",
+            ..bench_def("grouped")
+        })];
+        let mut groups = no_groups();
+        groups.insert(
+            "g",
+            fluxbench_core::GroupConfig {
+                sample_count: Some(1),
+                ..fluxbench_core::GroupConfig::NONE
+            },
+        );
+        let err = check_run_configs(&ExecutionConfig::default(), &benches, &groups, 0)
             .unwrap_err()
             .to_string();
+        assert!(err.contains("benchmark `grouped`"), "{err}");
+        assert!(err.contains("sample_count"), "{err}");
+    }
+
+    #[test]
+    fn timeout_below_measurement_is_an_error_without_the_clamp() {
+        let benches = [leak(bench_def("long"))];
+        let err = check_run_configs(
+            &ExecutionConfig::default(),
+            &benches,
+            &no_groups(),
+            1_000_000,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("timeout_ns"), "{err}");
     }
 }

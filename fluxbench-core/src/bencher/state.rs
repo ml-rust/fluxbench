@@ -2,8 +2,11 @@
 
 use super::config::{BenchmarkResult, DEFAULT_SAMPLE_COUNT, MeasureConfig, MeasureError};
 use super::sink::SampleSink;
-use fluxbench_ipc::Sample;
-use std::sync::{Arc, Mutex};
+use fluxbench_ipc::{Sample, Throughput};
+#[cfg(feature = "async")]
+use std::sync::Arc;
+use std::sync::Mutex;
+#[cfg(feature = "async")]
 use tokio::runtime::Runtime;
 
 /// The Bencher provides iteration control for benchmarks.
@@ -27,10 +30,13 @@ pub struct Bencher {
     /// First error the body caused. `finish` reports it.
     pub(super) error: Option<MeasureError>,
     /// Runtime for `iter_async`. `None` until attached or built.
+    #[cfg(feature = "async")]
     pub(super) runtime: Option<Arc<Runtime>>,
     /// Receives each sample when it is recorded. The mutex keeps `Bencher: Sync`.
     /// The engine reaches it through `&mut self`, so it never locks.
     pub(super) sink: Option<Mutex<Box<dyn SampleSink>>>,
+    /// Work per call the body set with `throughput`. The last call wins.
+    pub(super) throughput: Option<Throughput>,
 }
 
 impl Bencher {
@@ -52,9 +58,19 @@ impl Bencher {
             truncated: false,
             iter_called: false,
             error: None,
+            #[cfg(feature = "async")]
             runtime: None,
             sink: None,
+            throughput: None,
         }
+    }
+
+    /// Set the work one routine call processes. Reports turn it into a rate per second.
+    ///
+    /// Call it anywhere in the body. The last call wins.
+    /// It overrides `throughput_bytes` or `throughput_elements` on `#[flux::bench]` and `#[flux::group]`.
+    pub fn throughput(&mut self, throughput: Throughput) {
+        self.throughput = Some(throughput);
     }
 
     /// Send each recorded sample to `sink` during measurement.
@@ -186,6 +202,7 @@ impl Bencher {
             total_time_ns,
             iters_per_sample: self.iters_per_sample,
             truncated: self.truncated,
+            throughput: self.throughput,
         })
     }
 }
@@ -194,6 +211,48 @@ impl Bencher {
 mod tests {
     use super::*;
     use crate::bencher::config::MIN_SAMPLE_COUNT;
+    use std::sync::Arc;
+
+    #[test]
+    fn throughput_is_none_without_a_call() {
+        let result =
+            crate::bencher::run_benchmark_loop(Bencher::for_config(false, 2, Some(1)), |b| {
+                b.iter(|| 1_u64);
+            })
+            .expect("run succeeds");
+        assert_eq!(result.throughput, None);
+    }
+
+    #[test]
+    fn throughput_before_or_after_iter_reaches_the_result() {
+        let before =
+            crate::bencher::run_benchmark_loop(Bencher::for_config(false, 2, Some(1)), |b| {
+                b.throughput(Throughput::Bytes(64));
+                b.iter(|| 1_u64);
+            })
+            .expect("run succeeds");
+        assert_eq!(before.throughput, Some(Throughput::Bytes(64)));
+
+        let after =
+            crate::bencher::run_benchmark_loop(Bencher::for_config(false, 2, Some(1)), |b| {
+                b.iter(|| 1_u64);
+                b.throughput(Throughput::Elements(3));
+            })
+            .expect("run succeeds");
+        assert_eq!(after.throughput, Some(Throughput::Elements(3)));
+    }
+
+    #[test]
+    fn last_throughput_call_wins() {
+        let result =
+            crate::bencher::run_benchmark_loop(Bencher::for_config(false, 2, Some(1)), |b| {
+                b.throughput(Throughput::Bytes(64));
+                b.throughput(Throughput::Elements(8));
+                b.iter(|| 1_u64);
+            })
+            .expect("run succeeds");
+        assert_eq!(result.throughput, Some(Throughput::Elements(8)));
+    }
 
     #[test]
     fn sample_count_floor_is_two() {

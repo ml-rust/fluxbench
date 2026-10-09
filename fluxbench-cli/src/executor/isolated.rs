@@ -6,8 +6,10 @@ use super::execution::{
     BenchExecutionResult, ExecutionConfig, error_result, exact_allocations, mean_allocations,
     progress_bar,
 };
+use super::group_configs::GroupConfigs;
+use super::throughput::resolve_throughput;
 use crate::supervisor::{IpcBenchmarkResult, IpcBenchmarkStatus, Supervisor};
-use fluxbench_core::BenchmarkDef;
+use fluxbench_core::{BenchmarkDef, GroupConfig};
 use fluxbench_ipc::{BenchmarkConfig, FailureKind, Sample};
 use fluxbench_report::BenchmarkStatus;
 use std::time::Duration;
@@ -22,6 +24,7 @@ pub struct IsolatedExecutor {
     reuse_workers: bool,
     num_workers: usize,
     cpus: Vec<Option<usize>>,
+    groups: GroupConfigs,
 }
 
 impl IsolatedExecutor {
@@ -38,12 +41,19 @@ impl IsolatedExecutor {
             reuse_workers,
             num_workers: num_workers.max(1),
             cpus: Vec::new(),
+            groups: GroupConfigs::default(),
         }
     }
 
     /// Set the CPU each worker pins to. An empty list leaves workers unpinned.
     pub fn with_cpus(mut self, cpus: Vec<Option<usize>>) -> Self {
         self.cpus = cpus;
+        self
+    }
+
+    /// Apply `#[flux::group]` run config. Without it, no group config applies.
+    pub fn with_group_configs(mut self, groups: GroupConfigs) -> Self {
+        self.groups = groups;
         self
     }
 
@@ -57,7 +67,7 @@ impl IsolatedExecutor {
             .iter()
             .map(|bench| {
                 self.config
-                    .resolve_for_benchmark(bench)
+                    .resolve_for_benchmark(bench, &self.groups.get(bench.group))
                     .to_ipc_config(self.timeout)
             })
             .collect();
@@ -85,7 +95,8 @@ impl IsolatedExecutor {
             Ok(ipc_results) => {
                 for (ipc_result, bench) in ipc_results.into_iter().zip(benchmarks.iter()) {
                     pb.set_message(bench.id.to_string());
-                    results.push(convert_ipc_result(ipc_result, bench));
+                    let group = self.groups.get(bench.group);
+                    results.push(convert_ipc_result(ipc_result, bench, &group));
                     pb.inc(1);
                 }
             }
@@ -114,9 +125,11 @@ impl IsolatedExecutor {
 ///
 /// Only a successful run feeds statistics.
 /// A failed run's partial samples are dropped here. Its message states their count.
+/// `group` is the merged group config. It is the last source of throughput.
 fn convert_ipc_result(
     ipc_result: IpcBenchmarkResult,
     bench: &BenchmarkDef,
+    group: &GroupConfig,
 ) -> BenchExecutionResult {
     let (status, error_message, kind, backtrace) = match ipc_result.status {
         IpcBenchmarkStatus::Success => (BenchmarkStatus::Passed, None, None, None),
@@ -161,6 +174,11 @@ fn convert_ipc_result(
 
     let (alloc_bytes, alloc_count) = mean_allocations(measured);
     let (alloc_bytes_exact, alloc_count_exact) = exact_allocations(measured);
+    let throughput = if status == BenchmarkStatus::Passed {
+        resolve_throughput(ipc_result.throughput, bench, group)
+    } else {
+        None
+    };
 
     BenchExecutionResult {
         benchmark_id: bench.id.to_string(),
@@ -182,6 +200,7 @@ fn convert_ipc_result(
         backtrace,
         severity: bench.severity,
         threshold: bench.threshold,
+        throughput,
     }
 }
 
@@ -189,6 +208,7 @@ fn convert_ipc_result(
 mod tests {
     use super::*;
     use crate::executor::execution::tests::bench_def;
+    use fluxbench_core::Throughput;
 
     fn crashed(kind: FailureKind, message: &str, samples: Vec<Sample>) -> IpcBenchmarkResult {
         IpcBenchmarkResult {
@@ -196,11 +216,23 @@ mod tests {
             samples,
             total_iterations: 0,
             total_duration_nanos: 0,
+            throughput: None,
             status: IpcBenchmarkStatus::Crashed {
                 message: message.to_string(),
                 kind,
                 backtrace: None,
             },
+        }
+    }
+
+    fn success(throughput: Option<Throughput>) -> IpcBenchmarkResult {
+        IpcBenchmarkResult {
+            bench_id: "b".to_string(),
+            samples: vec![Sample::timing_only(5.0); 4],
+            total_iterations: 4,
+            total_duration_nanos: 20,
+            throughput,
+            status: IpcBenchmarkStatus::Success,
         }
     }
 
@@ -211,7 +243,7 @@ mod tests {
             "benchmark exceeded the 3s worker timeout; 3 partial samples received",
             vec![Sample::timing_only(5.0); 3],
         );
-        let result = convert_ipc_result(ipc, &bench_def());
+        let result = convert_ipc_result(ipc, &bench_def(), &GroupConfig::NONE);
         assert_eq!(result.status, BenchmarkStatus::Crashed);
         assert_eq!(result.failure_kind.as_deref(), Some("timeout"));
         assert!(result.samples.is_empty());
@@ -231,23 +263,47 @@ mod tests {
             "worker killed by SIGSEGV",
             Vec::new(),
         );
-        let result = convert_ipc_result(ipc, &bench_def());
+        let result = convert_ipc_result(ipc, &bench_def(), &GroupConfig::NONE);
         assert_eq!(result.failure_kind.as_deref(), Some("signal"));
         assert_eq!(result.signal.as_deref(), Some("SIGSEGV"));
     }
 
     #[test]
     fn success_keeps_samples() {
-        let ipc = IpcBenchmarkResult {
-            bench_id: "b".to_string(),
-            samples: vec![Sample::timing_only(5.0); 4],
-            total_iterations: 4,
-            total_duration_nanos: 20,
-            status: IpcBenchmarkStatus::Success,
-        };
-        let result = convert_ipc_result(ipc, &bench_def());
+        let result = convert_ipc_result(success(None), &bench_def(), &GroupConfig::NONE);
         assert_eq!(result.status, BenchmarkStatus::Passed);
         assert_eq!(result.samples.len(), 4);
         assert_eq!(result.failure_kind, None);
+        assert_eq!(result.throughput, None);
+    }
+
+    #[test]
+    fn worker_throughput_beats_bench_and_group() {
+        let bench = BenchmarkDef {
+            throughput: Some(Throughput::Bytes(2)),
+            ..bench_def()
+        };
+        let group = GroupConfig {
+            throughput: Some(Throughput::Bytes(1)),
+            ..GroupConfig::NONE
+        };
+        let from_worker = Some(Throughput::Elements(3));
+        let result = convert_ipc_result(success(from_worker), &bench, &group);
+        assert_eq!(result.throughput, from_worker);
+        let result = convert_ipc_result(success(None), &bench, &group);
+        assert_eq!(result.throughput, Some(Throughput::Bytes(2)));
+        let result = convert_ipc_result(success(None), &bench_def(), &group);
+        assert_eq!(result.throughput, Some(Throughput::Bytes(1)));
+    }
+
+    #[test]
+    fn failed_run_has_no_throughput() {
+        let bench = BenchmarkDef {
+            throughput: Some(Throughput::Bytes(2)),
+            ..bench_def()
+        };
+        let ipc = crashed(FailureKind::Panic, "boom", Vec::new());
+        let result = convert_ipc_result(ipc, &bench, &GroupConfig::NONE);
+        assert_eq!(result.throughput, None);
     }
 }

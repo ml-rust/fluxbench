@@ -6,18 +6,26 @@
 //! - High-precision timing (RDTSC with Instant fallback)
 //! - Global allocator interceptor for memory tracking
 //! - CPU affinity pinning for stable TSC readings
+//!
+//! The `async` feature (default) adds `iter_async` and `drive_async_body` on tokio.
+//! Without it, the crate has no tokio dependency.
 
 mod allocator;
 mod bencher;
+mod group_config;
 mod measure;
 mod shutdown;
 mod worker;
 
 pub use allocator::{TrackingAllocator, current_allocation, reset_allocation_counter};
+#[cfg(feature = "async")]
+pub use bencher::drive_async_body;
 pub use bencher::{
-    Bencher, BenchmarkResult, DEFAULT_SAMPLE_COUNT, IterationMode, MIN_SAMPLE_COUNT, MeasureConfig,
-    MeasureError, SETUP_CHUNK, SampleSink, drive_async_body, run_benchmark_loop,
+    BatchSize, Bencher, BenchmarkResult, DEFAULT_SAMPLE_COUNT, IterationMode, LARGE_INPUT_CHUNK,
+    MIN_SAMPLE_COUNT, MeasureConfig, MeasureError, SETUP_CHUNK, SampleSink, run_benchmark_loop,
 };
+pub use fluxbench_ipc::Throughput;
+pub use group_config::GroupConfig;
 /// Whether this platform provides hardware cycle counters (x86_64 RDTSCP or AArch64 CNTVCT_EL0).
 /// When `false`, cycle counts are reported as 0 and only wall-clock nanoseconds are available.
 pub use measure::HAS_CYCLE_COUNTER;
@@ -66,6 +74,9 @@ pub struct BenchmarkDef {
     pub min_iterations: Option<u64>,
     /// Per-benchmark maximum total measurement iterations
     pub max_iterations: Option<u64>,
+    /// Per-benchmark work per call for throughput rates.
+    /// `Bencher::throughput` in the body overrides it.
+    pub throughput: Option<Throughput>,
     /// Benchmark IDs that must run before this one
     pub depends_on: &'static [&'static str],
 }
@@ -95,6 +106,8 @@ pub struct GroupDef {
     pub tags: &'static [&'static str],
     /// Parent group. `--group <parent>` also selects this group.
     pub parent: Option<&'static str>,
+    /// Run config for every benchmark in this group and its child groups
+    pub config: GroupConfig,
 }
 
 /// Chart kind for `#[flux::chart]`

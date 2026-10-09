@@ -5,6 +5,7 @@ use super::escape::escape;
 use super::options::{HtmlGroup, HtmlOptions};
 use super::style::{BASE_CSS, theme_vars};
 use crate::format_duration;
+use crate::rate::format_work_rate;
 use crate::report::{BenchmarkReportResult, BenchmarkStatus, Report};
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -143,7 +144,7 @@ fn write_results(html: &mut String, report: &Report, groups: &[HtmlGroup]) {
             }
         }
         html.push_str("        <div class=\"table-wrap\"><table class=\"results-table\">\n");
-        html.push_str("          <thead><tr><th>Benchmark</th><th>Mean</th><th>p99</th><th>Alloc/iter</th><th>Status</th><th>Note</th></tr></thead>\n          <tbody>\n");
+        html.push_str("          <thead><tr><th>Benchmark</th><th>Mean</th><th>p99</th><th>Throughput</th><th>Alloc/iter</th><th>Status</th><th>Note</th></tr></thead>\n          <tbody>\n");
         for result in results {
             write_row(html, result);
         }
@@ -153,13 +154,19 @@ fn write_results(html: &mut String, report: &Report, groups: &[HtmlGroup]) {
 }
 
 fn write_row(html: &mut String, result: &BenchmarkReportResult) {
-    let (mean, p99, alloc) = match &result.metrics {
+    let (mean, p99, rate, alloc) = match &result.metrics {
         Some(m) => (
             format_duration(m.mean_ns),
             format_duration(m.p99_ns),
+            format_work_rate(m).unwrap_or_else(|| "-".to_string()),
             format!("{} B / {}", m.alloc_bytes, m.alloc_count),
         ),
-        None => ("-".to_string(), "-".to_string(), "-".to_string()),
+        None => (
+            "-".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+        ),
     };
     let status = match result.status {
         BenchmarkStatus::Passed => "passed",
@@ -174,7 +181,7 @@ fn write_row(html: &mut String, result: &BenchmarkReportResult) {
         .unwrap_or_default();
     let _ = writeln!(
         html,
-        "            <tr><td>{}</td><td>{mean}</td><td>{p99}</td><td>{alloc}</td><td class=\"status-{status}\">{status}</td><td>{}</td></tr>",
+        "            <tr><td>{}</td><td>{mean}</td><td>{p99}</td><td>{rate}</td><td>{alloc}</td><td class=\"status-{status}\">{status}</td><td>{}</td></tr>",
         escape(&result.id),
         escape(&note)
     );
@@ -373,6 +380,19 @@ mod tests {
         assert!(html.contains(&format!("<p class=\"group-desc\">{escaped}</p>")));
         assert!(html.contains(&format!("Tags: {escaped}")));
         assert!(html.contains(&format!("<figcaption>{escaped} ({escaped})</figcaption>")));
+    }
+
+    #[test]
+    fn rows_show_the_work_rate() {
+        let mut report = report_json();
+        if let Some(m) = report.results[0].metrics.as_mut() {
+            m.throughput_bytes_per_sec = Some(2.0 * 1024.0 * 1024.0);
+        }
+        let html = generate_html_report_with(&report, &options());
+        assert!(html.contains("<th>Throughput</th>"));
+        assert!(html.contains("<td>2.00 MiB/s</td>"), "{html}");
+        // The second result has no throughput.
+        assert!(html.contains("<td>-</td><td>0 B / 0</td>"), "{html}");
     }
 
     #[test]

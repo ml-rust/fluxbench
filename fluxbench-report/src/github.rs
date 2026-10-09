@@ -2,6 +2,7 @@
 //!
 //! Generates Markdown tables for $GITHUB_STEP_SUMMARY.
 
+use crate::rate::{format_byte_rate, format_element_rate};
 use crate::report::{BenchmarkStatus, Report, ReportSummary};
 use fluxbench_logic::{ResolvedMetric, VerificationResult, VerificationStatus};
 
@@ -42,6 +43,9 @@ pub fn generate_github_summary(report: &Report) -> String {
     if report.baseline_meta.is_none() {
         write_critical_benchmarks(&mut output, report);
     }
+
+    // Work rates of benchmarks with throughput
+    write_throughput(&mut output, report);
 
     // Verifications
     write_verifications(&mut output, &report.verifications);
@@ -175,6 +179,37 @@ fn write_critical_benchmarks(output: &mut String, report: &Report) {
             p99,
             change,
             status
+        ));
+    }
+    output.push('\n');
+}
+
+/// Table of byte and element rates. Absent when no benchmark has throughput.
+fn write_throughput(output: &mut String, report: &Report) {
+    let rows: Vec<_> = report
+        .results
+        .iter()
+        .filter_map(|r| {
+            let m = r.metrics.as_ref()?;
+            let bytes = m.throughput_bytes_per_sec.map(format_byte_rate);
+            let elements = m.throughput_elements_per_sec.map(format_element_rate);
+            (bytes.is_some() || elements.is_some()).then_some((r, m, bytes, elements))
+        })
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+
+    output.push_str("### Throughput\n\n");
+    output.push_str("| Benchmark | Mean | Bytes/s | Elements/s |\n");
+    output.push_str("|-----------|------|---------|------------|\n");
+    for (result, metrics, bytes, elements) in rows {
+        output.push_str(&format!(
+            "| `{}` | {} | {} | {} |\n",
+            table_cell(&result.id),
+            format_duration(metrics.mean_ns),
+            bytes.as_deref().unwrap_or("-"),
+            elements.as_deref().unwrap_or("-"),
         ));
     }
     output.push('\n');
@@ -674,6 +709,47 @@ mod tests {
         });
         let md = generate_github_summary(&rep);
         assert!(md.contains("| ERR a\\|b | `x \\|\\| y` | bad thing \\| here |"));
+    }
+
+    #[test]
+    fn throughput_table_lists_only_benchmarks_with_rates() {
+        use crate::test_fixtures::{metrics, report, result};
+        let mut bytes = metrics(1_000.0);
+        bytes.throughput_bytes_per_sec = Some(4.0 * 1024.0 * 1024.0 * 1024.0);
+        let mut elements = metrics(1_000.0);
+        elements.throughput_elements_per_sec = Some(1_000_000.0);
+        let rep = report(vec![
+            result("copy", "g", BenchmarkStatus::Passed, Some(bytes), None),
+            result("parse", "g", BenchmarkStatus::Passed, Some(elements), None),
+            result(
+                "plain",
+                "g",
+                BenchmarkStatus::Passed,
+                Some(metrics(1.0)),
+                None,
+            ),
+        ]);
+        let md = generate_github_summary(&rep);
+        assert!(md.contains("### Throughput"), "{md}");
+        assert!(md.contains("| `copy` | 1.0 us | 4.00 GiB/s | - |"), "{md}");
+        assert!(
+            md.contains("| `parse` | 1.0 us | - | 1.00 Melem/s |"),
+            "{md}"
+        );
+        assert!(!md.contains("`plain`"), "{md}");
+    }
+
+    #[test]
+    fn throughput_table_is_absent_without_rates() {
+        use crate::test_fixtures::{metrics, report, result};
+        let rep = report(vec![result(
+            "plain",
+            "g",
+            BenchmarkStatus::Passed,
+            Some(metrics(1.0)),
+            None,
+        )]);
+        assert!(!generate_github_summary(&rep).contains("### Throughput"));
     }
 
     #[test]

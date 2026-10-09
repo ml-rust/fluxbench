@@ -10,7 +10,10 @@
 //! - Comparison tables with speedup calculations
 //! - Verification results summary
 
-use fluxbench_report::{BenchmarkReportResult, BenchmarkStatus, Report, format_duration};
+use fluxbench_report::{
+    BenchmarkReportResult, BenchmarkStatus, Report, format_byte_rate, format_duration,
+    format_element_rate,
+};
 
 /// Format a report for human-readable terminal display
 ///
@@ -88,6 +91,12 @@ pub fn format_human_output(report: &Report) -> String {
                 }
                 if let Some(throughput) = metrics.throughput_ops_sec {
                     output.push_str(&format!("      throughput: {:.2} ops/sec\n", throughput));
+                }
+                if let Some(rate) = metrics.throughput_bytes_per_sec {
+                    output.push_str(&format!("      bytes: {}\n", format_byte_rate(rate)));
+                }
+                if let Some(rate) = metrics.throughput_elements_per_sec {
+                    output.push_str(&format!("      elements: {}\n", format_element_rate(rate)));
                 }
                 if metrics.alloc_bytes > 0 {
                     output.push_str(&format!(
@@ -299,6 +308,22 @@ pub(crate) fn ci_label(level: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn work_rates_print_with_units() {
+        let mut result = crate::test_support::dummy_result("copy", 1_000.0, 0.0);
+        if let Some(m) = result.metrics.as_mut() {
+            m.throughput_bytes_per_sec = Some(1.5 * 1024.0 * 1024.0 * 1024.0);
+            m.throughput_elements_per_sec = Some(2_000_000.0);
+        }
+        let text = format_human_output(&crate::test_support::dummy_report(vec![result]));
+        assert!(text.contains("      bytes: 1.50 GiB/s\n"), "{text}");
+        assert!(text.contains("      elements: 2.00 Melem/s\n"), "{text}");
+
+        let plain = crate::test_support::dummy_result("plain", 1_000.0, 0.0);
+        let text = format_human_output(&crate::test_support::dummy_report(vec![plain]));
+        assert!(!text.contains("bytes:"), "{text}");
+    }
 
     #[test]
     fn ci_label_follows_level() {

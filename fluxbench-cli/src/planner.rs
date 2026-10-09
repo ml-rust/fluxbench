@@ -185,6 +185,7 @@ mod tests {
             iters_per_sample: None,
             min_iterations: None,
             max_iterations: None,
+            throughput: None,
             depends_on,
         }
     }
@@ -341,7 +342,7 @@ mod tests {
 
     #[test]
     fn group_filter_and_tags_follow_group_definitions() {
-        use fluxbench_core::GroupDef;
+        use fluxbench_core::{GroupConfig, GroupDef};
         use std::collections::BTreeSet;
 
         static DEFS: [GroupDef; 2] = [
@@ -350,12 +351,14 @@ mod tests {
                 description: "",
                 tags: &["hot"],
                 parent: None,
+                config: GroupConfig::NONE,
             },
             GroupDef {
                 id: "json",
                 description: "",
                 tags: &[],
                 parent: Some("parsing"),
+                config: GroupConfig::NONE,
             },
         ];
         let tree = GroupTree::new(&DEFS, &BTreeSet::new()).unwrap();

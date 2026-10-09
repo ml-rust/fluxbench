@@ -2,6 +2,7 @@
 //!
 //! All messages are serialized with rkyv for zero-copy deserialization.
 
+use crate::Throughput;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 
 /// One measurement sample (40 bytes, 8-byte aligned).
@@ -153,6 +154,8 @@ pub enum WorkerMessage {
         total_iterations: u64,
         /// Sum of each sample's mean times its iterations, in nanoseconds
         total_duration_nanos: u64,
+        /// Work per call that the body set with `Bencher::throughput`. `None` without a call.
+        throughput: Option<Throughput>,
     },
 
     /// Benchmark failed with an error
@@ -524,6 +527,30 @@ mod tests {
         let bytes = rkyv::to_bytes::<rancor::Error>(&original).unwrap();
         let decoded = rkyv::from_bytes::<FailureKind, rancor::Error>(&bytes).unwrap();
         assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn complete_carries_throughput() {
+        for throughput in [None, Some(Throughput::Bytes(4096))] {
+            let original = WorkerMessage::Complete {
+                total_iterations: 10,
+                total_duration_nanos: 500,
+                throughput,
+            };
+            let bytes = rkyv::to_bytes::<rancor::Error>(&original).unwrap();
+            let decoded = rkyv::from_bytes::<WorkerMessage, rancor::Error>(&bytes).unwrap();
+            match decoded {
+                WorkerMessage::Complete {
+                    total_iterations,
+                    throughput: got,
+                    ..
+                } => {
+                    assert_eq!(total_iterations, 10);
+                    assert_eq!(got, throughput);
+                }
+                other => panic!("expected Complete, got {other:?}"),
+            }
+        }
     }
 
     #[test]

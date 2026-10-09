@@ -28,6 +28,7 @@
 //! - **Verifications**: Pass/fail checks with configurable severity levels
 
 use super::execution::BenchExecutionResult;
+use super::throughput::work_rates;
 use fluxbench_core::CompareDef;
 use fluxbench_logic::{
     MetricContext, SyntheticDef, SyntheticResult, Verification, VerificationContext,
@@ -55,63 +56,13 @@ pub fn execute_verifications(
     Vec<VerificationResult>,
 ) {
     // Build metric context with benchmark results
-    let mut context = MetricContext::new();
-    let mut unavailable = FxHashSet::default();
+    let (mut context, unavailable) = metric_context(results, stats);
 
     // Build stats lookup for comparison processing
     let stats_lookup: std::collections::HashMap<_, _> = stats
         .iter()
         .filter_map(|(id, s)| s.as_ref().map(|s| (id.as_str(), s)))
         .collect();
-
-    // Build a lookup for allocation data from results
-    let alloc_lookup: std::collections::HashMap<_, _> = results
-        .iter()
-        .map(|r| (r.benchmark_id.as_str(), (r.alloc_bytes, r.alloc_count)))
-        .collect();
-
-    for (bench_id, stats_opt) in stats {
-        if let Some(stats) = stats_opt {
-            // Add mean as the primary metric for each benchmark
-            context.set(bench_id, stats.mean);
-
-            // Central tendency
-            context.set(format!("{}_mean", bench_id), stats.mean);
-            context.set(format!("{}_median", bench_id), stats.median);
-            context.set(format!("{}_std_dev", bench_id), stats.std_dev);
-
-            // Extremes
-            context.set(format!("{}_min", bench_id), stats.min);
-            context.set(format!("{}_max", bench_id), stats.max);
-
-            // Percentiles
-            context.set(format!("{}_p50", bench_id), stats.p50);
-            context.set(format!("{}_p90", bench_id), stats.p90);
-            context.set(format!("{}_p95", bench_id), stats.p95);
-            context.set(format!("{}_p99", bench_id), stats.p99);
-            context.set(format!("{}_p999", bench_id), stats.p999);
-
-            // Distribution shape
-            context.set(format!("{}_skewness", bench_id), stats.skewness);
-            context.set(format!("{}_kurtosis", bench_id), stats.kurtosis);
-
-            // Operations per second, when the mean is above zero
-            if stats.mean > 0.0 {
-                context.set(format!("{}_throughput", bench_id), 1e9 / stats.mean);
-            }
-
-            // Sample info
-            context.set(format!("{}_samples", bench_id), stats.sample_count as f64);
-
-            // Allocation data (from results, not stats)
-            if let Some(&(alloc_bytes, alloc_count)) = alloc_lookup.get(bench_id.as_str()) {
-                context.set(format!("{}_alloc_bytes", bench_id), alloc_bytes as f64);
-                context.set(format!("{}_alloc_count", bench_id), alloc_count as f64);
-            }
-        } else {
-            unavailable.insert(bench_id.clone());
-        }
-    }
 
     // Process comparison groups
     let mut comparison_results: Vec<ComparisonResult> = Vec::new();
@@ -318,5 +269,143 @@ fn get_metric_value(stats: &SummaryStatistics, metric: &str) -> Option<f64> {
         "p99" => Some(stats.p99),
         "p999" => Some(stats.p999),
         _ => None,
+    }
+}
+
+/// Metrics `#[verify]` and `#[synthetic]` can name, plus the IDs of benchmarks without stats.
+fn metric_context(
+    results: &[BenchExecutionResult],
+    stats: &[(String, Option<SummaryStatistics>)],
+) -> (MetricContext, FxHashSet<String>) {
+    let mut context = MetricContext::new();
+    let mut unavailable = FxHashSet::default();
+
+    // Allocation data and throughput come from results, not stats
+    let result_lookup: std::collections::HashMap<_, _> = results
+        .iter()
+        .map(|r| (r.benchmark_id.as_str(), r))
+        .collect();
+
+    for (bench_id, stats_opt) in stats {
+        let Some(stats) = stats_opt else {
+            unavailable.insert(bench_id.clone());
+            continue;
+        };
+        // Add mean as the primary metric for each benchmark
+        context.set(bench_id, stats.mean);
+
+        // Central tendency
+        context.set(format!("{}_mean", bench_id), stats.mean);
+        context.set(format!("{}_median", bench_id), stats.median);
+        context.set(format!("{}_std_dev", bench_id), stats.std_dev);
+
+        // Extremes
+        context.set(format!("{}_min", bench_id), stats.min);
+        context.set(format!("{}_max", bench_id), stats.max);
+
+        // Percentiles
+        context.set(format!("{}_p50", bench_id), stats.p50);
+        context.set(format!("{}_p90", bench_id), stats.p90);
+        context.set(format!("{}_p95", bench_id), stats.p95);
+        context.set(format!("{}_p99", bench_id), stats.p99);
+        context.set(format!("{}_p999", bench_id), stats.p999);
+
+        // Distribution shape
+        context.set(format!("{}_skewness", bench_id), stats.skewness);
+        context.set(format!("{}_kurtosis", bench_id), stats.kurtosis);
+
+        // Operations per second, when the mean is above zero
+        if stats.mean > 0.0 {
+            context.set(format!("{}_throughput", bench_id), 1e9 / stats.mean);
+        }
+
+        // Sample info
+        context.set(format!("{}_samples", bench_id), stats.sample_count as f64);
+
+        if let Some(result) = result_lookup.get(bench_id.as_str()) {
+            context.set(
+                format!("{}_alloc_bytes", bench_id),
+                result.alloc_bytes as f64,
+            );
+            context.set(
+                format!("{}_alloc_count", bench_id),
+                result.alloc_count as f64,
+            );
+
+            // Bytes or elements per second, for a benchmark with throughput
+            let (bytes, elements) = work_rates(result.throughput, stats.mean);
+            if let Some(rate) = bytes {
+                context.set(format!("{}_throughput_bytes", bench_id), rate);
+            }
+            if let Some(rate) = elements {
+                context.set(format!("{}_throughput_elements", bench_id), rate);
+            }
+        }
+    }
+    (context, unavailable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::executor::execution::error_result;
+    use fluxbench_core::Throughput;
+    use fluxbench_report::BenchmarkStatus;
+    use fluxbench_stats::{OutlierMethod, compute_summary};
+
+    /// A passed result with `throughput` and 100 ns samples.
+    fn passed(id: &'static str, throughput: Option<Throughput>) -> BenchExecutionResult {
+        let mut result = error_result(
+            &crate::test_support::bench_def(id),
+            BenchmarkStatus::Passed,
+            String::new(),
+            "unknown",
+            0,
+        );
+        result.error_message = None;
+        result.failure_kind = None;
+        result.samples = vec![100.0; 4];
+        result.throughput = throughput;
+        result
+    }
+
+    fn stats_of(results: &[BenchExecutionResult]) -> Vec<(String, Option<SummaryStatistics>)> {
+        results
+            .iter()
+            .map(|r| {
+                let stats = compute_summary(&r.samples, OutlierMethod::Iqr { k: 3 });
+                (r.benchmark_id.clone(), Some(stats))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn throughput_rates_reach_the_metric_context() {
+        let results = [
+            passed("copy", Some(Throughput::Bytes(1024))),
+            passed("parse", Some(Throughput::Elements(10))),
+            passed("plain", None),
+        ];
+        let (context, unavailable) = metric_context(&results, &stats_of(&results));
+        assert!(unavailable.is_empty());
+        // 1024 bytes per 100 ns call.
+        assert_eq!(context.get("copy_throughput_bytes"), Some(10_240_000_000.0));
+        assert_eq!(context.get("copy_throughput_elements"), None);
+        assert_eq!(
+            context.get("parse_throughput_elements"),
+            Some(100_000_000.0)
+        );
+        assert_eq!(context.get("parse_throughput_bytes"), None);
+        assert_eq!(context.get("plain_throughput_bytes"), None);
+        assert_eq!(context.get("plain_throughput"), Some(10_000_000.0));
+    }
+
+    #[test]
+    fn missing_stats_mark_the_benchmark_unavailable() {
+        let results = [passed("gone", None)];
+        let stats = vec![("gone".to_string(), None)];
+        let (context, unavailable) = metric_context(&results, &stats);
+        assert!(unavailable.contains("gone"));
+        assert_eq!(context.get("gone"), None);
     }
 }

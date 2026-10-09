@@ -30,8 +30,11 @@
 //!  BenchExecutionResult (samples, status, allocations, cycles)
 //! ```
 
+use super::group_configs::GroupConfigs;
+use super::throughput::resolve_throughput;
 use fluxbench_core::{
-    Bencher, BenchmarkDef, MeasureConfig, cycles_overhead, run_benchmark_loop, timer_overhead_ns,
+    Bencher, BenchmarkDef, GroupConfig, MeasureConfig, Throughput, cycles_overhead,
+    run_benchmark_loop, timer_overhead_ns,
 };
 use fluxbench_ipc::{BenchmarkConfig, Sample};
 use fluxbench_report::BenchmarkStatus;
@@ -95,30 +98,41 @@ pub struct ExecutionConfig {
 }
 
 impl ExecutionConfig {
-    /// Merge per-benchmark configuration overrides with global defaults.
+    /// Merge per-benchmark and group overrides with this config.
     ///
-    /// Priority:
-    /// 1. Per-benchmark `samples = N`: fixed mode, N samples of one iteration, no warmup
-    /// 2. Per-benchmark `sample_count`: overrides only the count
-    /// 3. Per-benchmark `iters_per_sample`: selects fixed mode with that many iterations
-    /// 4. Per-benchmark `warmup_ns`/`measurement_ns`/`min/max_iterations`: override global values
-    /// 5. Falls back to global config for anything not overridden
+    /// Precedence per key: `#[flux::bench]`, then `group`, then this config, which holds
+    /// CLI flags over flux.toml over defaults. `group` is the merged `#[flux::group]` chain.
+    ///
+    /// - Count: bench `sample_count`, bench `samples`, group, this config.
+    /// - Iterations per sample: bench `iters_per_sample`, bench `samples` (1), group, this config.
+    ///   `Some` selects fixed mode.
+    /// - Warmup, measurement, min and max iterations: bench, group, this config.
     ///
     /// Fixed mode sets warmup to 0 and clears min/max iterations.
-    pub fn resolve_for_benchmark(&self, bench: &BenchmarkDef) -> ExecutionConfig {
+    pub fn resolve_for_benchmark(
+        &self,
+        bench: &BenchmarkDef,
+        group: &GroupConfig,
+    ) -> ExecutionConfig {
         let sample_count = bench
             .sample_count
             .or(bench.samples)
+            .or(group.sample_count)
             .map_or(self.sample_count, |n| n as usize);
         let iters_per_sample = bench
             .iters_per_sample
             .or(bench.samples.map(|_| 1))
+            .or(group.iters_per_sample)
             .or(self.iters_per_sample);
+        let measurement_time_ns = bench
+            .measurement_ns
+            .or(group.measurement_ns)
+            .unwrap_or(self.measurement_time_ns);
 
         if iters_per_sample.is_some() {
             return ExecutionConfig {
                 warmup_time_ns: 0,
-                measurement_time_ns: bench.measurement_ns.unwrap_or(self.measurement_time_ns),
+                measurement_time_ns,
                 min_iterations: None,
                 max_iterations: None,
                 sample_count,
@@ -128,10 +142,19 @@ impl ExecutionConfig {
         }
 
         ExecutionConfig {
-            warmup_time_ns: bench.warmup_ns.unwrap_or(self.warmup_time_ns),
-            measurement_time_ns: bench.measurement_ns.unwrap_or(self.measurement_time_ns),
-            min_iterations: bench.min_iterations.or(self.min_iterations),
-            max_iterations: bench.max_iterations.or(self.max_iterations),
+            warmup_time_ns: bench
+                .warmup_ns
+                .or(group.warmup_ns)
+                .unwrap_or(self.warmup_time_ns),
+            measurement_time_ns,
+            min_iterations: bench
+                .min_iterations
+                .or(group.min_iterations)
+                .or(self.min_iterations),
+            max_iterations: bench
+                .max_iterations
+                .or(group.max_iterations)
+                .or(self.max_iterations),
             sample_count,
             iters_per_sample: None,
             ..self.clone()
@@ -212,11 +235,14 @@ pub struct BenchExecutionResult {
     pub severity: fluxbench_core::Severity,
     /// Per-benchmark regression threshold (0.0 = use global)
     pub threshold: f64,
+    /// Work per call after precedence: body, then `#[flux::bench]`, then group. `None` on failure.
+    pub throughput: Option<Throughput>,
 }
 
 /// Execute benchmarks and produce results (in-process mode)
 pub struct Executor {
     config: ExecutionConfig,
+    groups: GroupConfigs,
     results: Vec<BenchExecutionResult>,
 }
 
@@ -228,8 +254,15 @@ impl Executor {
         let _ = cycles_overhead();
         Self {
             config,
+            groups: GroupConfigs::default(),
             results: Vec::new(),
         }
+    }
+
+    /// Apply `#[flux::group]` run config. Without it, no group config applies.
+    pub fn with_group_configs(mut self, groups: GroupConfigs) -> Self {
+        self.groups = groups;
+        self
     }
 
     /// Execute all provided benchmarks
@@ -250,7 +283,8 @@ impl Executor {
     /// Execute a single benchmark
     fn execute_single(&self, bench: &BenchmarkDef) -> BenchExecutionResult {
         let start = Instant::now();
-        let cfg = self.config.resolve_for_benchmark(bench);
+        let group = self.groups.get(bench.group);
+        let cfg = self.config.resolve_for_benchmark(bench, &group);
 
         // Run with panic catching
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -306,6 +340,7 @@ impl Executor {
                     backtrace: None,
                     severity: bench.severity,
                     threshold: bench.threshold,
+                    throughput: resolve_throughput(bench_result.throughput, bench, &group),
                 }
             }
             Ok(Err(error)) => error_result(
@@ -365,6 +400,7 @@ pub(super) fn error_result(
         backtrace: None,
         severity: bench.severity,
         threshold: bench.threshold,
+        throughput: None,
     }
 }
 
@@ -376,6 +412,9 @@ pub(super) mod tests {
     pub(in crate::executor) fn bench_def() -> BenchmarkDef {
         crate::test_support::bench_def("b")
     }
+
+    /// No `#[flux::group]` config.
+    const NO_GROUP: &GroupConfig = &GroupConfig::NONE;
 
     #[test]
     fn exact_allocations_keep_fractions() {
@@ -393,7 +432,7 @@ pub(super) mod tests {
             sample_count: 300,
             ..Default::default()
         };
-        let cfg = global.resolve_for_benchmark(&bench_def());
+        let cfg = global.resolve_for_benchmark(&bench_def(), NO_GROUP);
         assert_eq!(cfg.sample_count, 300);
         assert_eq!(cfg.iters_per_sample, None);
         assert_eq!(cfg.warmup_time_ns, global.warmup_time_ns);
@@ -409,7 +448,7 @@ pub(super) mod tests {
             sample_count: Some(40),
             ..bench_def()
         };
-        let cfg = global.resolve_for_benchmark(&bench);
+        let cfg = global.resolve_for_benchmark(&bench, NO_GROUP);
         assert_eq!(cfg.sample_count, 40);
         assert_eq!(cfg.iters_per_sample, None);
         assert_eq!(cfg.warmup_time_ns, global.warmup_time_ns);
@@ -422,7 +461,7 @@ pub(super) mod tests {
             samples: Some(500),
             ..bench_def()
         };
-        let cfg = ExecutionConfig::default().resolve_for_benchmark(&bench);
+        let cfg = ExecutionConfig::default().resolve_for_benchmark(&bench, NO_GROUP);
         assert_eq!(cfg.sample_count, 500);
         assert_eq!(cfg.iters_per_sample, Some(1));
         assert_eq!(cfg.warmup_time_ns, 0);
@@ -437,7 +476,7 @@ pub(super) mod tests {
             sample_count: Some(20),
             ..bench_def()
         };
-        let cfg = ExecutionConfig::default().resolve_for_benchmark(&bench);
+        let cfg = ExecutionConfig::default().resolve_for_benchmark(&bench, NO_GROUP);
         assert_eq!(cfg.sample_count, 20);
         assert_eq!(cfg.iters_per_sample, Some(1));
     }
@@ -455,9 +494,125 @@ pub(super) mod tests {
             iters_per_sample: Some(4),
             ..bench_def()
         };
-        let cfg = global.resolve_for_benchmark(&bench);
+        let cfg = global.resolve_for_benchmark(&bench, NO_GROUP);
         assert_eq!(cfg.sample_count, 250);
         assert_eq!(cfg.iters_per_sample, Some(4));
+    }
+
+    #[test]
+    fn resolve_group_beats_global() {
+        let global = ExecutionConfig {
+            sample_count: 300,
+            ..Default::default()
+        };
+        let group = GroupConfig {
+            sample_count: Some(30),
+            warmup_ns: Some(500_000_000),
+            measurement_ns: Some(2_000_000_000),
+            min_iterations: Some(7),
+            max_iterations: Some(70),
+            ..GroupConfig::NONE
+        };
+        let cfg = global.resolve_for_benchmark(&bench_def(), &group);
+        assert_eq!(cfg.sample_count, 30);
+        assert_eq!(cfg.warmup_time_ns, 500_000_000);
+        assert_eq!(cfg.measurement_time_ns, 2_000_000_000);
+        assert_eq!(cfg.min_iterations, Some(7));
+        assert_eq!(cfg.max_iterations, Some(70));
+        assert_eq!(cfg.iters_per_sample, None);
+    }
+
+    #[test]
+    fn resolve_bench_beats_group() {
+        let group = GroupConfig {
+            sample_count: Some(30),
+            warmup_ns: Some(500_000_000),
+            measurement_ns: Some(2_000_000_000),
+            ..GroupConfig::NONE
+        };
+        let bench = BenchmarkDef {
+            sample_count: Some(12),
+            measurement_ns: Some(1_000_000_000),
+            ..bench_def()
+        };
+        let cfg = ExecutionConfig::default().resolve_for_benchmark(&bench, &group);
+        assert_eq!(cfg.sample_count, 12);
+        assert_eq!(cfg.measurement_time_ns, 1_000_000_000);
+        // The bench leaves warmup unset, so the group value applies.
+        assert_eq!(cfg.warmup_time_ns, 500_000_000);
+    }
+
+    #[test]
+    fn resolve_bench_samples_beats_group_count_and_mode() {
+        let group = GroupConfig {
+            sample_count: Some(30),
+            iters_per_sample: Some(8),
+            ..GroupConfig::NONE
+        };
+        let bench = BenchmarkDef {
+            samples: Some(500),
+            ..bench_def()
+        };
+        let cfg = ExecutionConfig::default().resolve_for_benchmark(&bench, &group);
+        assert_eq!(cfg.sample_count, 500);
+        assert_eq!(cfg.iters_per_sample, Some(1));
+    }
+
+    #[test]
+    fn resolve_group_fixed_mode_drops_warmup() {
+        let group = GroupConfig {
+            iters_per_sample: Some(8),
+            warmup_ns: Some(500_000_000),
+            min_iterations: Some(7),
+            ..GroupConfig::NONE
+        };
+        let cfg = ExecutionConfig::default().resolve_for_benchmark(&bench_def(), &group);
+        assert_eq!(cfg.iters_per_sample, Some(8));
+        assert_eq!(cfg.warmup_time_ns, 0);
+        assert_eq!(cfg.min_iterations, None);
+    }
+
+    #[test]
+    fn executor_applies_group_config_and_throughput() {
+        let bench = BenchmarkDef {
+            group: "io",
+            runner_fn: |b| b.iter(|| 1_u64),
+            ..bench_def()
+        };
+        let mut groups = GroupConfigs::default();
+        groups.insert(
+            "io",
+            GroupConfig {
+                sample_count: Some(4),
+                iters_per_sample: Some(2),
+                throughput: Some(Throughput::Elements(5)),
+                ..GroupConfig::NONE
+            },
+        );
+        let executor = Executor::new(ExecutionConfig {
+            bootstrap_iterations: 0,
+            ..Default::default()
+        })
+        .with_group_configs(groups);
+        let result = executor.execute_single(&bench);
+        assert_eq!(result.status, BenchmarkStatus::Passed);
+        assert_eq!(result.samples.len(), 4);
+        assert_eq!(result.throughput, Some(Throughput::Elements(5)));
+    }
+
+    #[test]
+    fn body_throughput_beats_bench_attribute_in_process() {
+        let bench = BenchmarkDef {
+            iters_per_sample: Some(1),
+            throughput: Some(Throughput::Bytes(64)),
+            runner_fn: |b| {
+                b.throughput(Throughput::Bytes(128));
+                b.iter(|| 1_u64);
+            },
+            ..bench_def()
+        };
+        let result = Executor::new(ExecutionConfig::default()).execute_single(&bench);
+        assert_eq!(result.throughput, Some(Throughput::Bytes(128)));
     }
 
     #[test]

@@ -12,7 +12,8 @@
 //!
 //! | Example | Feature |
 //! |---------|---------|
-//! | `feature_iteration` | `iter()`, `iter_with_setup()`, `iter_batched()` |
+//! | `feature_iteration` | `iter()`, `iter_with_setup()`, `iter_batched()` with `BatchSize`, `iter_batched_ref()`, `iter_batched_shared()`, `iter_custom()` |
+//! | `feature_throughput` | Bytes and elements per second: attribute, `b.throughput()`, group, `#[verify]` |
 //! | `feature_async` | Tokio runtimes, spawn, channels, mutexes, semaphores |
 //! | `feature_params` | `args = [...]` parameterized scaling tests |
 //! | `feature_verify` | `#[verify]` assertions and `#[synthetic]` metrics |

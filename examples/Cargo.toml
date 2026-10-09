@@ -6,12 +6,14 @@ publish = false
 
 [dependencies]
 fluxbench.workspace = true
-tokio.workspace = true
 rand.workspace = true
 regex = "1"
 
 [[example]]
 name = "feature_iteration"
+
+[[example]]
+name = "feature_throughput"
 
 [[example]]
 name = "feature_async"
@@ -45,6 +47,8 @@ name = "test_baseline"
 
 [dev-dependencies]
 serde_json.workspace = true
+# Only `feature_async` uses tokio directly: timers, TCP, async IO, and file reads.
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "io-util", "fs"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"

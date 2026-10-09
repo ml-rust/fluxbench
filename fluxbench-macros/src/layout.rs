@@ -1,56 +1,9 @@
-//! `#[flux::group]`, `#[flux::report]`, and `#[flux::chart]`: HTML report structure.
+//! `#[flux::report]` and `#[flux::chart]`: HTML report structure.
 
 use crate::attr;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::ItemStruct;
-
-pub fn group_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, syn::Error> {
-    let struct_name = &input.ident;
-    let struct_name_str = struct_name.to_string();
-
-    let mut id = struct_name_str.clone();
-    let mut description = String::new();
-    let mut tags: Vec<String> = Vec::new();
-    let mut parent: Option<String> = None;
-
-    let parser = syn::meta::parser(|meta| {
-        let name = attr::name(&meta);
-        match name.as_str() {
-            "id" => id = attr::string(&meta)?,
-            "description" | "desc" => description = attr::string(&meta)?,
-            "tags" => tags = attr::tags(&meta)?,
-            "parent" => parent = Some(attr::string(&meta)?),
-            _ => return Err(attr::unknown(&meta, &name)),
-        }
-        Ok(())
-    });
-
-    syn::parse::Parser::parse2(parser, args)?;
-
-    if parent.as_deref() == Some(id.as_str()) {
-        return Err(syn::Error::new_spanned(
-            &input,
-            format!("group `{id}` cannot be its own parent"),
-        ));
-    }
-
-    let tags_tokens: Vec<_> = tags.iter().map(|t| quote! { #t }).collect();
-    let parent_expr = attr::option(parent);
-
-    Ok(quote! {
-        #input
-
-        ::fluxbench::internal::inventory::submit! {
-            ::fluxbench::GroupDef {
-                id: #id,
-                description: #description,
-                tags: &[#(#tags_tokens),*],
-                parent: #parent_expr,
-            }
-        }
-    })
-}
 
 pub fn report_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, syn::Error> {
     let struct_name = &input.ident;
@@ -275,11 +228,5 @@ mod tests {
             ))
             .contains(">= 1")
         );
-    }
-
-    #[test]
-    fn group_rejects_self_parent() {
-        let e = err(group_impl(quote!(id = "g", parent = "g"), item()));
-        assert!(e.contains("cannot be its own parent"), "{e}");
     }
 }

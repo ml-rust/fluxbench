@@ -142,6 +142,7 @@ impl WorkerMain {
                 WorkerMessage::Complete {
                     total_iterations: bench_result.iterations,
                     total_duration_nanos: bench_result.total_time_ns,
+                    throughput: bench_result.throughput,
                 }
             }
             Ok(Err(error)) => WorkerMessage::Failure {

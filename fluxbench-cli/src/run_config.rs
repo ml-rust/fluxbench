@@ -1,8 +1,9 @@
 //! Run config resolution
 //!
-//! Layers run settings in this order: macro attribute > CLI flag > flux.toml > default.
+//! Layers run settings in this order:
+//! `#[flux::bench]` > nearest `#[flux::group]` > parent groups > CLI flag > flux.toml > default.
 //! This module covers the CLI and flux.toml layers.
-//! `ExecutionConfig::resolve_for_benchmark` applies the macro layer per benchmark.
+//! `ExecutionConfig::resolve_for_benchmark` applies the bench and group layers per benchmark.
 
 use crate::{Cli, ExecutionConfig, FluxConfig};
 

@@ -1,9 +1,11 @@
-//! `#[flux::group]` hierarchy: parent links and inherited tags.
+//! `#[flux::group]` hierarchy: parent links, inherited tags, and inherited run config.
 //!
 //! A benchmark carries its own tags plus the tags of its group and every ancestor group.
 //! `--group g` selects group `g` and every group below it.
+//! A group's run config fills keys its child groups leave unset.
 
-use fluxbench_core::{BenchmarkDef, GroupDef};
+use crate::executor::GroupConfigs;
+use fluxbench_core::{BenchmarkDef, GroupConfig, GroupDef};
 use std::collections::{BTreeSet, HashMap};
 
 /// Checked group definitions
@@ -92,6 +94,24 @@ impl<'a> GroupTree<'a> {
         tags
     }
 
+    /// Run config of `group` merged with its ancestors' configs, nearest group first
+    pub(crate) fn config_of(&self, group: &str) -> GroupConfig {
+        GroupConfig::merge_chain(
+            self.ancestors(group)
+                .into_iter()
+                .filter_map(|id| self.defs.get(id).map(|def| &def.config)),
+        )
+    }
+
+    /// Merged run config of every `#[flux::group]`
+    pub(crate) fn configs(&self) -> GroupConfigs {
+        let mut configs = GroupConfigs::default();
+        for id in self.defs.keys() {
+            configs.insert(*id, self.config_of(id));
+        }
+        configs
+    }
+
     /// IDs of every `#[flux::group]`
     pub(crate) fn defined_ids(&self) -> Vec<&'a str> {
         self.defs.keys().copied().collect()
@@ -117,7 +137,54 @@ mod tests {
             description: "",
             tags,
             parent,
+            config: GroupConfig::NONE,
         }
+    }
+
+    #[test]
+    fn nested_group_config_nearest_first() {
+        let root = GroupDef {
+            config: GroupConfig {
+                warmup_ns: Some(1),
+                measurement_ns: Some(2),
+                sample_count: Some(3),
+                ..GroupConfig::NONE
+            },
+            ..def("root", None, &[])
+        };
+        let mid = GroupDef {
+            config: GroupConfig {
+                sample_count: Some(30),
+                throughput: Some(fluxbench_core::Throughput::Bytes(8)),
+                ..GroupConfig::NONE
+            },
+            ..def("mid", Some("root"), &[])
+        };
+        let leaf = GroupDef {
+            config: GroupConfig {
+                warmup_ns: Some(100),
+                ..GroupConfig::NONE
+            },
+            ..def("leaf", Some("mid"), &[])
+        };
+        let defs = [root, mid, leaf];
+        let tree = GroupTree::new(&defs, &BTreeSet::new()).unwrap();
+
+        let merged = tree.config_of("leaf");
+        assert_eq!(merged.warmup_ns, Some(100));
+        assert_eq!(merged.sample_count, Some(30));
+        assert_eq!(merged.measurement_ns, Some(2));
+        assert_eq!(
+            merged.throughput,
+            Some(fluxbench_core::Throughput::Bytes(8))
+        );
+
+        let configs = tree.configs();
+        assert_eq!(configs.get("leaf"), merged);
+        assert_eq!(configs.get("mid").warmup_ns, Some(1));
+        assert_eq!(configs.get("root").sample_count, Some(3));
+        // A benchmark group without `#[flux::group]` gets nothing.
+        assert_eq!(configs.get("plain"), GroupConfig::NONE);
     }
 
     #[test]

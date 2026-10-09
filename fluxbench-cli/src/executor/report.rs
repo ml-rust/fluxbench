@@ -30,6 +30,7 @@
 
 use super::execution::{BenchExecutionResult, ExecutionConfig};
 use super::metadata::build_report_meta;
+use super::throughput::work_rates;
 use fluxbench_report::{
     BenchmarkMetrics, BenchmarkReportResult, BenchmarkStatus, FailureInfo, Report, ReportSummary,
 };
@@ -89,6 +90,7 @@ pub fn build_report(
                 } else {
                     None
                 };
+                let (bytes_per_sec, elements_per_sec) = work_rates(result.throughput, s.mean);
 
                 // Compute CPU cycles statistics
                 let cycles_stats = compute_cycles_stats(&result.cpu_cycles, &result.samples);
@@ -112,6 +114,8 @@ pub fn build_report(
                     ci_upper_ns: ci_upper,
                     ci_level: config.confidence_level,
                     throughput_ops_sec: throughput,
+                    throughput_bytes_per_sec: bytes_per_sec,
+                    throughput_elements_per_sec: elements_per_sec,
                     alloc_bytes: result.alloc_bytes,
                     alloc_count: result.alloc_count,
                     // CPU cycles from RDTSC (x86_64 only, 0 on other platforms)

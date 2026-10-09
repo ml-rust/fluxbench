@@ -27,7 +27,8 @@ readme = "README.md"
 # Workspace crates
 fluxbench = { path = "fluxbench", version = "0.1.0" }
 fluxbench-cli = { path = "fluxbench-cli", version = "0.1.0" }
-fluxbench-core = { path = "fluxbench-core", version = "0.1.0" }
+# No default features: only the facade's `async` feature pulls in tokio.
+fluxbench-core = { path = "fluxbench-core", version = "0.1.0", default-features = false }
 fluxbench-ipc = { path = "fluxbench-ipc", version = "0.1.0" }
 fluxbench-logic = { path = "fluxbench-logic", version = "0.1.0" }
 fluxbench-macros = { path = "fluxbench-macros", version = "0.1.0" }
@@ -40,8 +41,9 @@ rkyv = "0.8"
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime, behind the `async` feature of fluxbench-core and fluxbench.
+# Members add `rt-multi-thread`, `time`, `net`, `io-util`, or `fs` where they use them.
+tokio = { version = "1", default-features = false, features = ["rt", "sync"] }
 
 # Parallelism
 rayon = "1.10"

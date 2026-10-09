@@ -20,7 +20,9 @@ mod attr;
 mod bench;
 mod compare;
 mod duration;
+mod group;
 mod layout;
+mod throughput;
 mod verify;
 
 /// Register a benchmark function
@@ -47,13 +49,20 @@ mod verify;
 /// #[flux::bench(sample_count = 250, iters_per_sample = 10)]
 /// fn fixed_benchmark(b: &mut Bencher) { ... }
 ///
-/// // Async with multi-threaded runtime
+/// // 4 KiB of work per call: reports show bytes per second
+/// #[flux::bench(throughput_bytes = 4096)]
+/// fn checksum_4k(b: &mut Bencher) { ... }
+///
+/// // Async with multi-threaded runtime. Needs the `async` feature of fluxbench (default).
 /// #[flux::bench(runtime = "multi_thread", worker_threads = 4)]
 /// async fn async_benchmark(b: &mut Bencher) { ... }
 /// ```
 ///
 /// `budget`, `warmup`, and `measurement` take a number with a unit: `ns`, `us`, `ms`, or `s`.
 /// A mean per-iteration time above `budget` fails the benchmark.
+/// `throughput_bytes` and `throughput_elements` take an integer above 0. Set at most one.
+/// `Bencher::throughput` in the body overrides them.
+/// An `async fn` without the `async` feature is a compile error that names the feature.
 #[proc_macro_attribute]
 pub fn bench(args: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -88,18 +97,27 @@ pub fn synthetic(args: TokenStream, item: TokenStream) -> TokenStream {
 /// )]
 /// struct ParsingGroup;
 ///
-/// // Nested groups
+/// // Nested groups with run config for every benchmark below them
 /// #[flux::group(
 ///     id = "json_parsing",
 ///     parent = "parsing",
-///     description = "JSON-specific parsing benchmarks"
+///     description = "JSON-specific parsing benchmarks",
+///     sample_count = 30,
+///     measurement = "2s",
+///     warmup = "500ms",
+///     throughput_bytes = 65536
 /// )]
 /// struct JsonParsingGroup;
 /// ```
+///
+/// Run keys: `warmup`, `measurement`, `sample_count`, `iters_per_sample`, `min_iterations`,
+/// `max_iterations`, and one of `throughput_bytes` or `throughput_elements`.
+/// Precedence per key: `#[flux::bench]`, then the nearest group, then parent groups,
+/// then CLI flags and flux.toml, then the default.
 #[proc_macro_attribute]
 pub fn group(args: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemStruct);
-    finish(layout::group_impl(TokenStream2::from(args), input))
+    finish(group::group_impl(TokenStream2::from(args), input))
 }
 
 /// Set the HTML report title, description, and chart grid

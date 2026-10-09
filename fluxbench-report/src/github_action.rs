@@ -129,6 +129,8 @@ mod tests {
             ci_upper_ns: Some(mean_ns * 1.02),
             ci_level: 0.95,
             throughput_ops_sec: Some(1_000_000_000.0 / mean_ns),
+            throughput_bytes_per_sec: None,
+            throughput_elements_per_sec: None,
             alloc_bytes: 0,
             alloc_count: 0,
             mean_cycles: 0.0,

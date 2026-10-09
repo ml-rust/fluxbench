@@ -42,7 +42,7 @@ pub use cli_args::{Cli, Commands};
 pub use config::*;
 pub use dispatch::{run, run_with_cli};
 pub use executor::{
-    ExecutionConfig, Executor, IsolatedExecutor, build_report, compute_statistics,
+    ExecutionConfig, Executor, GroupConfigs, IsolatedExecutor, build_report, compute_statistics,
     execute_verifications, format_human_output,
 };
 pub use report_format::ReportFormat;

@@ -1,6 +1,6 @@
 //! Per-benchmark result of an isolated run.
 
-use fluxbench_ipc::{FailureKind, Sample};
+use fluxbench_ipc::{FailureKind, Sample, Throughput};
 
 /// Result from a benchmark run via IPC
 #[derive(Debug)]
@@ -14,6 +14,8 @@ pub struct IpcBenchmarkResult {
     pub total_iterations: u64,
     /// Total benchmark duration in nanoseconds. 0 on failure.
     pub total_duration_nanos: u64,
+    /// Work per call the body set with `Bencher::throughput`. `None` without a call or on failure.
+    pub throughput: Option<Throughput>,
     /// Status of the benchmark execution.
     pub status: IpcBenchmarkStatus,
 }
@@ -85,6 +87,7 @@ impl IpcBenchmarkResult {
             samples,
             total_iterations: 0,
             total_duration_nanos: 0,
+            throughput: None,
             status,
         }
     }

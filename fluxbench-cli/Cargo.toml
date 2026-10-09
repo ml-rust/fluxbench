@@ -27,7 +27,6 @@ fluxbench-logic.workspace = true
 fluxbench-report.workspace = true
 
 clap.workspace = true
-tokio.workspace = true
 inventory.workspace = true
 indicatif.workspace = true
 tracing.workspace = true

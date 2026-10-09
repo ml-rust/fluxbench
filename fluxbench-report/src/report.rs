@@ -240,6 +240,14 @@ pub struct BenchmarkMetrics {
     pub ci_level: f64,
     /// Throughput in operations per second (if applicable)
     pub throughput_ops_sec: Option<f64>,
+    /// Bytes per second: bytes per call over the mean time per call.
+    /// Set only for a benchmark with byte throughput. Reports without it read as `None`.
+    #[serde(default)]
+    pub throughput_bytes_per_sec: Option<f64>,
+    /// Elements per second: elements per call over the mean time per call.
+    /// Set only for a benchmark with element throughput. Reports without it read as `None`.
+    #[serde(default)]
+    pub throughput_elements_per_sec: Option<f64>,
     /// Mean bytes allocated per iteration
     pub alloc_bytes: u64,
     /// Mean allocation count per iteration
@@ -277,6 +285,8 @@ impl From<&SummaryStatistics> for BenchmarkMetrics {
             ci_upper_ns: None,
             ci_level: fluxbench_stats::DEFAULT_CONFIDENCE_LEVEL,
             throughput_ops_sec: None,
+            throughput_bytes_per_sec: None,
+            throughput_elements_per_sec: None,
             alloc_bytes: 0,
             alloc_count: 0,
             // Cycles filled separately via CyclesStatistics
@@ -415,6 +425,21 @@ mod tests {
         let config: ReportConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.sample_count, 100);
         assert_eq!(config.iters_per_sample, None);
+    }
+
+    #[test]
+    fn metrics_without_rate_fields_read_as_none() {
+        let metrics: BenchmarkMetrics = serde_json::from_value(serde_json::json!({
+            "samples": 2, "mean_ns": 10.0, "median_ns": 9.0, "std_dev_ns": 1.0,
+            "min_ns": 8.0, "max_ns": 12.0, "p50_ns": 9.0, "p90_ns": 11.0, "p95_ns": 11.5,
+            "p99_ns": 12.0, "p999_ns": 12.0, "skewness": 0.0, "kurtosis": 3.0,
+            "ci_level": 0.95, "throughput_ops_sec": 1.0e8, "alloc_bytes": 0,
+            "alloc_count": 0, "mean_cycles": 0.0, "median_cycles": 0.0,
+            "min_cycles": 0, "max_cycles": 0, "cycles_per_ns": 0.0
+        }))
+        .unwrap();
+        assert_eq!(metrics.throughput_bytes_per_sec, None);
+        assert_eq!(metrics.throughput_elements_per_sec, None);
     }
 
     #[test]

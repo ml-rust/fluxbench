@@ -10,6 +10,11 @@ keywords.workspace = true
 categories.workspace = true
 readme.workspace = true
 
+[features]
+default = ["async"]
+# Async `#[flux::bench]` bodies and `Bencher::iter_async` on tokio. Off removes tokio.
+async = ["fluxbench-core/async", "dep:tokio"]
+
 [dependencies]
 fluxbench-cli.workspace = true
 fluxbench-core.workspace = true
@@ -20,4 +25,9 @@ fluxbench-ipc.workspace = true
 
 # Re-export for macros
 inventory.workspace = true
-tokio.workspace = true
+# Generated async wrappers build `current_thread` or `multi_thread` runtimes with time and IO.
+tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "time", "net"] }
+
+[[test]]
+name = "async_runtime"
+required-features = ["async"]

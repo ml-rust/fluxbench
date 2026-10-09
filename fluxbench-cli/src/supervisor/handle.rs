@@ -136,12 +136,14 @@ impl WorkerHandle {
                 WorkerMessage::Complete {
                     total_iterations,
                     total_duration_nanos,
+                    throughput,
                 } => {
                     return Ok(IpcBenchmarkResult {
                         bench_id: bench_id.to_string(),
                         samples,
                         total_iterations,
                         total_duration_nanos,
+                        throughput,
                         status: IpcBenchmarkStatus::Success,
                     });
                 }

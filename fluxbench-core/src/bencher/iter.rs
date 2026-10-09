@@ -1,14 +1,9 @@
-//! Synchronous `iter*` methods.
+//! `iter`: measure a closure with no per-call setup.
 
 use super::engine::SampleRaw;
 use super::state::Bencher;
 use crate::measure::Timer;
 use std::hint::black_box;
-
-/// Most inputs `iter_with_setup` holds at once.
-///
-/// Peak memory is at most this many live inputs plus this many live outputs.
-pub const SETUP_CHUNK: u64 = 1024;
 
 impl Bencher {
     /// Measure `f`. This call runs warmup and every sample.
@@ -35,112 +30,14 @@ impl Bencher {
             raw
         });
     }
-
-    /// Measure `routine` on fresh inputs from `setup`. Setup time is excluded.
-    ///
-    /// Setup builds inputs untimed in chunks of at most `SETUP_CHUNK`.
-    /// Outputs drop after the timer stops.
-    /// Peak memory is `SETUP_CHUNK` inputs plus `SETUP_CHUNK` outputs.
-    #[inline]
-    pub fn iter_with_setup<T, S, F, R>(&mut self, mut setup: S, mut routine: F)
-    where
-        S: FnMut() -> T,
-        F: FnMut(T) -> R,
-    {
-        if !self.begin_iter() {
-            return;
-        }
-        let mut inputs: Vec<T> = Vec::new();
-        let mut outputs: Vec<R> = Vec::new();
-        self.run_loop(|b, n| {
-            let mut raw = SampleRaw::default();
-            let mut remaining = n;
-            while remaining > 0 {
-                let chunk = remaining.min(SETUP_CHUNK);
-                // `chunk` is at most SETUP_CHUNK, so the cast is lossless.
-                inputs.reserve(chunk as usize);
-                outputs.reserve(chunk as usize);
-                inputs.extend((0..chunk).map(|_| setup()));
-
-                b.alloc_reset();
-                let timer = Timer::start();
-                for input in inputs.drain(..) {
-                    outputs.push(black_box(routine(input)));
-                }
-                let (ns, cycles) = timer.stop();
-                raw.add(ns, cycles, b.alloc_read());
-
-                outputs.clear();
-                remaining -= chunk;
-            }
-            raw
-        });
-    }
-
-    /// Measure `routine` on a shared input that `setup` rebuilds every `batch_size` calls.
-    ///
-    /// `batch_size` sets only the setup cadence. A value of 0 rises to 1.
-    /// Each sample calls `setup` `ceil(iters_per_sample / batch_size)` times, untimed.
-    #[inline]
-    pub fn iter_batched<T, S, F, R>(&mut self, batch_size: u64, mut setup: S, mut routine: F)
-    where
-        S: FnMut() -> T,
-        F: FnMut(&T) -> R,
-    {
-        if !self.begin_iter() {
-            return;
-        }
-        let batch_size = batch_size.max(1);
-        self.run_loop(|b, n| {
-            let mut raw = SampleRaw::default();
-            let mut remaining = n;
-            while remaining > 0 {
-                let chunk = remaining.min(batch_size);
-                let input = setup();
-
-                b.alloc_reset();
-                let timer = Timer::start();
-                for _ in 0..chunk {
-                    black_box(routine(black_box(&input)));
-                }
-                let (ns, cycles) = timer.stop();
-                raw.add(ns, cycles, b.alloc_read());
-
-                drop(input);
-                remaining -= chunk;
-            }
-            raw
-        });
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::bencher::test_support::{fixed, quick};
     use crate::bencher::{Bencher, MeasureConfig, MeasureError, run_benchmark_loop};
     use std::cell::Cell;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
-
-    /// Short time-based config: 2 ms warmup, 10 ms measurement.
-    fn quick(sample_count: usize) -> MeasureConfig {
-        MeasureConfig {
-            warmup_ns: 2_000_000,
-            measurement_ns: 10_000_000,
-            sample_count,
-            fixed_iters_per_sample: None,
-            min_iterations: None,
-            max_iterations: None,
-            track_allocations: false,
-        }
-    }
-
-    /// Fixed-mode config: `samples` samples of `ips` calls.
-    fn fixed(samples: usize, ips: u64) -> MeasureConfig {
-        MeasureConfig {
-            fixed_iters_per_sample: Some(ips),
-            ..quick(samples)
-        }
-    }
 
     #[test]
     fn runner_called_once() {
@@ -289,106 +186,5 @@ mod tests {
             err.map(|e| e.to_string()).as_deref(),
             Some("benchmark body never called b.iter*")
         );
-    }
-
-    #[test]
-    fn iter_batched_setup_cadence() {
-        let setups = Cell::new(0_u64);
-        let calls = Cell::new(0_u64);
-        let result = run_benchmark_loop(Bencher::with_config(fixed(4, 10)), |b| {
-            b.iter_batched(
-                3,
-                || setups.set(setups.get() + 1),
-                |_| calls.set(calls.get() + 1),
-            );
-        })
-        .expect("measurement succeeds");
-
-        assert_eq!(result.iterations, 40);
-        assert_eq!(calls.get(), 40);
-        // ceil(10 / 3) = 4 setups per sample.
-        assert_eq!(setups.get(), 4 * 10_u64.div_ceil(3));
-    }
-
-    #[test]
-    fn iter_batched_zero_batch_size() {
-        let setups = Cell::new(0_u64);
-        let calls = Cell::new(0_u64);
-        let result = run_benchmark_loop(Bencher::with_config(fixed(2, 5)), |b| {
-            b.iter_batched(
-                0,
-                || setups.set(setups.get() + 1),
-                |_| calls.set(calls.get() + 1),
-            );
-        })
-        .expect("measurement succeeds");
-
-        assert_eq!(result.iterations, 10);
-        assert_eq!(calls.get(), 10);
-        assert_eq!(setups.get(), 10);
-    }
-
-    #[test]
-    fn iter_with_setup_excludes_setup_time() {
-        let setups = Cell::new(0_u64);
-        let result = run_benchmark_loop(Bencher::with_config(fixed(2, 5)), |b| {
-            b.iter_with_setup(
-                || {
-                    setups.set(setups.get() + 1);
-                    std::thread::sleep(Duration::from_millis(1));
-                    vec![1_u64, 2, 3]
-                },
-                |v| v.iter().sum::<u64>(),
-            );
-        })
-        .expect("measurement succeeds");
-
-        assert_eq!(setups.get(), 10);
-        assert_eq!(result.iterations, 10);
-        // Each setup sleeps 1 ms. The routine takes far less.
-        assert!(
-            result.samples.iter().all(|s| s.duration_nanos < 500_000.0),
-            "samples: {:?}",
-            result.samples
-        );
-    }
-
-    #[test]
-    fn slow_setup_keeps_every_sample() {
-        let config = MeasureConfig {
-            warmup_ns: 5_000_000,
-            measurement_ns: 50_000_000,
-            ..quick(10)
-        };
-        let result = run_benchmark_loop(Bencher::with_config(config), |b| {
-            b.iter_with_setup(|| std::thread::sleep(Duration::from_millis(1)), |()| 1_u64);
-        })
-        .expect("measurement succeeds");
-
-        // Wall-clock sizing counts the 1 ms setup: about 5 calls per 5 ms sample.
-        assert_eq!(result.samples.len(), 10);
-        assert!(!result.truncated);
-        assert!(
-            result.iters_per_sample <= 10,
-            "ips: {}",
-            result.iters_per_sample
-        );
-    }
-
-    #[test]
-    fn iter_with_setup_chunks_large_batches() {
-        let setups = Cell::new(0_u64);
-        let calls = Cell::new(0_u64);
-        let result = run_benchmark_loop(Bencher::with_config(fixed(2, 2_500)), |b| {
-            b.iter_with_setup(
-                || setups.set(setups.get() + 1),
-                |()| calls.set(calls.get() + 1),
-            );
-        })
-        .expect("measurement succeeds");
-
-        assert_eq!(result.iterations, 5_000);
-        assert_eq!(setups.get(), 5_000);
-        assert_eq!(calls.get(), 5_000);
     }
 }

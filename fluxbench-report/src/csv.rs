@@ -148,6 +148,14 @@ const COLUMNS: &[Column] = &[
         name: "failure_message",
         cell: |r| from_failure(r, |f| &f.message),
     },
+    Column {
+        name: "throughput_bytes_per_sec",
+        cell: |r| from_metrics(r, |m| optional(m.throughput_bytes_per_sec)),
+    },
+    Column {
+        name: "throughput_elements_per_sec",
+        cell: |r| from_metrics(r, |m| optional(m.throughput_elements_per_sec)),
+    },
 ];
 
 /// Quote a field when it holds a comma, a quote, CR, or LF. Inner quotes double.
@@ -199,6 +207,7 @@ fn push_record<'a>(csv: &mut String, fields: impl Iterator<Item = Cow<'a, str>>)
 /// - `trimmed_mean_ns` - Mean without detected outliers (empty when absent)
 /// - `throughput_ops_sec` - Operations per second (empty when absent)
 /// - `failure_kind` / `failure_message` - Failure details (empty without a failure)
+/// - `throughput_bytes_per_sec` / `throughput_elements_per_sec` - Work rates (empty without throughput)
 pub fn generate_csv_report(report: &Report) -> String {
     let mut csv = String::new();
     push_record(&mut csv, COLUMNS.iter().map(|c| Cow::Borrowed(c.name)));
@@ -335,7 +344,37 @@ mod tests {
         assert_eq!(records[1].len(), COLUMNS.len());
         assert_eq!(records[1][0], id);
         assert_eq!(records[1][2], "g,h");
-        assert_eq!(records[1][COLUMNS.len() - 1], message);
+        let message_column = COLUMNS
+            .iter()
+            .position(|c| c.name == "failure_message")
+            .unwrap();
+        assert_eq!(records[1][message_column], message);
+    }
+
+    #[test]
+    fn rate_columns_follow_the_failure_columns() {
+        let names: Vec<&str> = COLUMNS.iter().map(|c| c.name).collect();
+        assert_eq!(
+            &names[names.len() - 4..],
+            [
+                "failure_kind",
+                "failure_message",
+                "throughput_bytes_per_sec",
+                "throughput_elements_per_sec"
+            ]
+        );
+        let mut m = metrics(100.0);
+        m.throughput_bytes_per_sec = Some(1_048_576.0);
+        let rep = report(vec![result(
+            "p",
+            "g",
+            BenchmarkStatus::Passed,
+            Some(m),
+            None,
+        )]);
+        let records = parse(&generate_csv_report(&rep));
+        assert_eq!(records[1][names.len() - 2], "1048576.00");
+        assert_eq!(records[1][names.len() - 1], "");
     }
 
     #[test]
@@ -364,13 +403,13 @@ mod tests {
             ),
         ]);
         let failed_row = format!(
-            "\"vec![1,2]\",\"vec![1,2]\",g,failed{},panic,\"say \"\"hi\"\"\"",
+            "\"vec![1,2]\",\"vec![1,2]\",g,failed{},panic,\"say \"\"hi\"\"\",,",
             ",".repeat(20)
         );
         let expected = format!(
             "{}\n{}\n{}\n",
-            "id,name,group,status,mean_ns,median_ns,std_dev_ns,min_ns,max_ns,p50_ns,p95_ns,p99_ns,samples,alloc_bytes,alloc_count,mean_cycles,median_cycles,cycles_per_ns,p90_ns,p999_ns,ci_lower_ns,ci_upper_ns,trimmed_mean_ns,throughput_ops_sec,failure_kind,failure_message",
-            "a,a,g,passed,100.00,98.00,2.00,90.00,110.00,98.00,107.00,109.00,10,64,2,300,300,3.00,105.00,110.00,97.00,103.00,99.00,2000.50,,",
+            "id,name,group,status,mean_ns,median_ns,std_dev_ns,min_ns,max_ns,p50_ns,p95_ns,p99_ns,samples,alloc_bytes,alloc_count,mean_cycles,median_cycles,cycles_per_ns,p90_ns,p999_ns,ci_lower_ns,ci_upper_ns,trimmed_mean_ns,throughput_ops_sec,failure_kind,failure_message,throughput_bytes_per_sec,throughput_elements_per_sec",
+            "a,a,g,passed,100.00,98.00,2.00,90.00,110.00,98.00,107.00,109.00,10,64,2,300,300,3.00,105.00,110.00,97.00,103.00,99.00,2000.50,,,,",
             failed_row,
         );
         assert_eq!(generate_csv_report(&rep), expected);

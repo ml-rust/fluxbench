@@ -89,6 +89,9 @@ fn iters_per_sample(config: &MeasureConfig, est_ns: f64) -> u64 {
     ips.max(1)
 }
 
+/// Largest warmup batch. Stops runaway growth when a routine reports near-zero time.
+const MAX_WARMUP_BATCH: u64 = 1 << 30;
+
 /// Hard deadline for the measurement phase: `max(3 * measurement_ns, 1s)`.
 fn deadline(config: &MeasureConfig) -> Duration {
     Duration::from_nanos(config.measurement_ns.saturating_mul(3)).max(MIN_DEADLINE)
@@ -170,7 +173,7 @@ impl Bencher {
             if start.elapsed() >= budget || shutdown_requested() {
                 break;
             }
-            n = n.saturating_mul(2);
+            n = n.saturating_mul(2).min(MAX_WARMUP_BATCH);
         }
         self.warmup_iterations = sum_iters;
         sum_wall_ns as f64 / sum_iters.max(1) as f64

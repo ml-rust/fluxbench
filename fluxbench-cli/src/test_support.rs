@@ -56,6 +56,8 @@ pub(crate) fn dummy_metrics(mean: f64) -> BenchmarkMetrics {
         ci_upper_ns: Some(mean * 1.02),
         ci_level: 0.95,
         throughput_ops_sec: None,
+        throughput_bytes_per_sec: None,
+        throughput_elements_per_sec: None,
         alloc_bytes: 0,
         alloc_count: 0,
         mean_cycles: 0.0,
@@ -105,6 +107,7 @@ pub(crate) fn bench_def(id: &'static str) -> BenchmarkDef {
         iters_per_sample: None,
         min_iterations: None,
         max_iterations: None,
+        throughput: None,
         depends_on: &[],
     }
 }

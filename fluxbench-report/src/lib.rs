@@ -13,6 +13,7 @@ mod github_action;
 mod html;
 mod json;
 mod metric;
+mod rate;
 mod report;
 #[cfg(test)]
 mod test_fixtures;
@@ -28,6 +29,9 @@ pub use html::{
 };
 pub use json::{ReportSchema, generate_json_report};
 pub use metric::{CHART_METRICS, metric_value};
+pub use rate::{
+    format_byte_rate, format_element_rate, format_work_rate, scale_byte_rate, scale_element_rate,
+};
 pub use report::{
     BenchmarkMetrics, BenchmarkReportResult, BenchmarkStatus, Comparison, ComparisonEntry,
     ComparisonMethod, ComparisonResult, ComparisonSeries, FailureInfo, REPORT_SCHEMA_VERSION,

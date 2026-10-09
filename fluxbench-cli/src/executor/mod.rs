@@ -43,13 +43,17 @@
 //! - [`verification`] - Comparison, synthetic, and verification processing
 //! - [`formatting`] - Human-readable output formatting
 //! - [`metadata`] - System metadata collection
+//! - [`group_configs`] - Merged `#[flux::group]` run config per group
+//! - [`throughput`] - Throughput precedence and work rates
 
 mod execution;
 mod formatting;
+mod group_configs;
 mod isolated;
 mod metadata;
 mod report;
 mod statistics;
+mod throughput;
 mod verification;
 
 // Re-export public API
@@ -57,6 +61,7 @@ pub(crate) use execution::BenchExecutionResult;
 pub use execution::{ExecutionConfig, Executor};
 pub(crate) use formatting::ci_label;
 pub use formatting::format_human_output;
+pub use group_configs::GroupConfigs;
 pub use isolated::IsolatedExecutor;
 pub use report::build_report;
 pub use statistics::compute_statistics;

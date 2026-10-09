@@ -50,8 +50,10 @@ Each attribute is independent. Use one, use all, add them later — your benchma
 | [Output formats](#output-formats)                       | Human, JSON, HTML, CSV, GitHub Actions summary                       |
 | [CI integration](#ci-integration)                       | Exit code 1 on critical failures, `flux.toml` severity levels        |
 | [Allocation tracking](#allocation-tracking)             | Per-iteration heap bytes and count                                   |
-| [Async support](#async-benchmarks)                      | Tokio `current_thread` or `multi_thread`, one runtime per benchmark  |
-| [Configuration](#configuration)                         | `flux.toml` with CLI override, macro > CLI > file > default          |
+| [Throughput](#throughput)                               | Bytes per second (MiB/s, GiB/s) or elements per second               |
+| [Batched inputs](#batched-inputs)                       | `iter_batched`, `iter_batched_ref`, `BatchSize`, `iter_custom`       |
+| [Async support](#async-benchmarks)                      | Tokio `current_thread` or `multi_thread`, behind the `async` feature |
+| [Configuration](#configuration)                         | `flux.toml` with CLI override, bench > group > CLI > file > default  |
 
 ## Quick Start
 
@@ -125,6 +127,114 @@ fn with_setup(b: &mut Bencher) {
 }
 ```
 
+`iter_with_setup(setup, routine)` equals `iter_batched(setup, routine, BatchSize::SmallInput)`.
+
+### Batched Inputs
+
+`iter_batched` and `iter_batched_ref` follow criterion:
+
+```rust
+#[bench]
+fn sort_fresh(b: &mut Bencher) {
+    b.iter_batched(
+        || (0..1_000u32).rev().collect::<Vec<_>>(),  // Setup: once per call, untimed
+        |mut v| { v.sort(); v },                      // Routine: takes the input by value
+        BatchSize::SmallInput,
+    );
+}
+
+#[bench]
+fn clear_in_place(b: &mut Bencher) {
+    b.iter_batched_ref(
+        || vec![1u8; 1 << 20],
+        |buf| buf.fill(0),                            // Routine: borrows the input mutably
+        BatchSize::LargeInput,
+    );
+}
+```
+
+- Setup runs once per call. It builds each batch of inputs before the timer starts.
+- One timer covers the routine over a whole batch.
+- Outputs drop after the timer stops. `iter_batched_ref` also drops the inputs then.
+- `BatchSize` sets the inputs per batch:
+
+| `BatchSize`         | Inputs per batch                                    |
+| ------------------- | --------------------------------------------------- |
+| `SmallInput`        | Up to 1024. Fits cheap inputs.                      |
+| `LargeInput`        | Up to 16. Fits inputs that hold a lot of memory.    |
+| `PerIteration`      | 1. Each call gets its own timer.                    |
+| `NumBatches(n)`     | Each sample's calls split into `n` batches.         |
+| `NumIterations(n)`  | `n`, capped at the sample's calls.                  |
+
+- `NumBatches(0)` and `NumIterations(0)` count as 1.
+- Peak memory is one batch of inputs plus one batch of outputs.
+
+`iter_batched_shared(batch_size, setup, routine)` hands one shared `&T` to `batch_size` calls:
+
+```rust
+#[bench]
+fn regex_match(b: &mut Bencher) {
+    b.iter_batched_shared(
+        128,                                          // Calls per setup
+        || regex::Regex::new("^[a-z]+$").unwrap(),    // Setup: once per 128 calls, untimed
+        |re| re.is_match("hello"),                    // Routine: borrows the shared input
+    );
+}
+```
+
+Before this API, `iter_batched` had this signature. Rename old calls to `iter_batched_shared`.
+
+### Custom Timing
+
+`iter_custom` hands the body a call count. The body runs that many calls, times them, and returns the elapsed time:
+
+```rust
+#[bench]
+fn self_timed(b: &mut Bencher) {
+    b.iter_custom(|iters| {
+        let start = std::time::Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(2 + 2);
+        }
+        start.elapsed()
+    });
+}
+```
+
+- The engine runs warmup and sizes the samples from the wall time of each call to the closure.
+- The returned time is the sample total. No timer overhead is removed from it.
+- Allocation counts cover the whole closure. Cycle counts are 0.
+
+### Throughput
+
+Set the work one call processes. Reports then show a rate:
+
+```rust
+#[bench(throughput_bytes = 4096)]                    // 4 KiB per call
+fn checksum_4k(b: &mut Bencher) {
+    let data = vec![1u8; 4096];
+    b.iter(|| data.iter().map(|&x| x as u64).sum::<u64>());
+}
+
+#[bench(throughput_elements = 1000)]                 // 1000 items per call
+fn parse_1000(b: &mut Bencher) { /* ... */ }
+
+#[bench]
+fn copy_dynamic(b: &mut Bencher) {
+    let src = vec![0u8; 300_000];
+    b.throughput(Throughput::Bytes(src.len() as u64)); // Set from the body
+    b.iter(|| src.clone());
+}
+```
+
+- Precedence: `b.throughput(...)` in the body, then `#[bench]`, then the nearest `#[group]`, then parent groups.
+- `throughput_bytes` and `throughput_elements` are mutually exclusive. Either one at 0 is a compile error.
+- The rate is the work per call over the mean time per call.
+  - Bytes use binary units: B/s, KiB/s, MiB/s, GiB/s, TiB/s.
+  - Elements use elem/s, Kelem/s, Melem/s, Gelem/s.
+- JSON metrics: `throughput_bytes_per_sec`, `throughput_elements_per_sec`. A benchmark without that kind omits the value.
+- `throughput_ops_sec` (1e9 / mean) stays for every benchmark.
+
 ### Grouping Benchmarks
 
 ```rust
@@ -182,6 +292,35 @@ struct JsonParsing;
 - `description`, `tags`: the HTML report shows them in the group's section.
 - A duplicate `id` or a parent cycle is an error at startup.
 
+### Group Run Config
+
+A `#[group]` can set run config for every benchmark in it and in its child groups:
+
+```rust
+#[group(id = "io", sample_count = 30, measurement = "2s", warmup = "500ms")]
+struct Io;
+
+#[group(id = "disk", parent = "io", throughput_bytes = 65536, warmup = "1s")]
+struct Disk;
+
+#[bench(group = "disk", sample_count = 10)]
+fn read_64k(b: &mut Bencher) { /* ... */ }
+```
+
+- Keys: `warmup`, `measurement`, `sample_count`, `iters_per_sample`, `min_iterations`, `max_iterations`, and one of `throughput_bytes` or `throughput_elements`.
+- `warmup` and `measurement` use the `#[bench]` duration syntax. A bad value is a compile error.
+- Precedence per key:
+  1. `#[bench]` attribute
+  2. Nearest `#[group]`
+  3. Parent groups, nearest first
+  4. CLI flag
+  5. `flux.toml`
+  6. Built-in default
+- Above, `read_64k` runs 10 samples (bench), 1 s warmup (`disk`), 2 s measurement (`io`), and 64 KiB per call (`disk`).
+- `#[bench(samples = N)]` beats a group's `sample_count` and `iters_per_sample`.
+- A group `iters_per_sample` selects fixed mode: no warmup, no `min_iterations` or `max_iterations`.
+- A resolved config that fails the startup check names the benchmark, e.g. a group `sample_count = 1`.
+
 ### Time Budget
 
 `budget` fails a benchmark whose mean time per iteration exceeds it:
@@ -222,6 +361,34 @@ async fn async_with_setup(b: &mut Bencher) {
 - `iter_async` times creating and awaiting each future. Each batch runs in one `block_on`.
 - Setup before `iter_async` can await, use `tokio::time`, and call `tokio::spawn`.
 - `iter_async` inside another runtime's `block_on` or task records an error and runs nothing.
+
+#### The `async` feature
+
+Async support needs tokio. The `async` cargo feature of `fluxbench` gates it. It is on by default.
+
+```toml
+[dev-dependencies]
+# Sync benchmarks only: no tokio in the dependency tree
+fluxbench = { version = "<latest-version>", default-features = false }
+```
+
+- Off: `iter_async`, `drive_async_body`, and `attach_runtime` do not exist.
+- Off: an `async fn` under `#[bench]` is a compile error: "enable the `async` feature of fluxbench".
+- `fluxbench-core` has the same `async` feature, on by default. `fluxbench` forwards its own.
+- tokio features in use: `rt` and `sync` in `fluxbench-core`. `fluxbench` adds `rt-multi-thread`, `time`, and `net` for the generated runtimes.
+- `fluxbench-cli` has no tokio dependency.
+
+CI checks for the gate, run from the workspace root:
+
+```bash
+# Builds with no tokio in the tree
+cargo build -p fluxbench-core --no-default-features
+cargo tree -p fluxbench-core --no-default-features -e normal | grep -c tokio   # prints 0
+cargo build -p fluxbench --no-default-features
+# Builds with the async API
+cargo build -p fluxbench-core
+cargo test -p fluxbench --test async_runtime
+```
 
 ## Performance Assertions
 
@@ -284,6 +451,8 @@ struct IterNotSlower;
 | `_std_dev`                          | Standard deviation                      |
 | `_skewness` / `_kurtosis`           | Distribution shape                      |
 | `_throughput`                       | Operations per second (1e9 / mean)      |
+| `_throughput_bytes`                 | Bytes per second. Needs byte throughput. |
+| `_throughput_elements`              | Elements per second. Needs element throughput. |
 | `_samples`                          | Sample count                            |
 | `_alloc_bytes` / `_alloc_count`     | Mean bytes / allocations per iteration  |
 
@@ -433,7 +602,7 @@ Run `cargo bench -- --help` for the full option reference.
 
 FluxBench works out of the box with sensible defaults — no configuration file is needed. For workspace-wide customization, you can optionally create a `flux.toml` in your project root. FluxBench auto-discovers it by walking up from the current directory.
 
-Settings are applied in this priority order: **macro attribute > CLI flag > flux.toml > built-in default**.
+Settings are applied in this priority order: **`#[bench]` attribute > `#[group]` attribute (nearest first) > CLI flag > flux.toml > built-in default**. See [Group Run Config](#group-run-config).
 
 Every key below is real, and every real key is listed. These are errors that stop the run before any benchmark starts:
 
@@ -562,6 +731,8 @@ Group: compute
       cycles: mean 603  median 601  (4.72 GHz)
 ```
 
+A benchmark with throughput adds `bytes: 1.50 GiB/s` or `elements: 3.20 Melem/s` under `throughput`.
+
 ### JSON
 
 Machine-readable format with full metadata:
@@ -599,9 +770,11 @@ Machine-readable format with full metadata:
 Spreadsheet-compatible format with all metrics:
 
 ```
-id,name,group,status,mean_ns,median_ns,std_dev_ns,min_ns,max_ns,p50_ns,p95_ns,p99_ns,samples,alloc_bytes,alloc_count,mean_cycles,median_cycles,cycles_per_ns
+id,name,group,status,mean_ns,median_ns,std_dev_ns,min_ns,max_ns,p50_ns,p95_ns,p99_ns,samples,alloc_bytes,alloc_count,mean_cycles,median_cycles,cycles_per_ns,p90_ns,p999_ns,ci_lower_ns,ci_upper_ns,trimmed_mean_ns,throughput_ops_sec,failure_kind,failure_message,throughput_bytes_per_sec,throughput_elements_per_sec
 bench_fibonacci_iter,bench_fibonacci_iter,compute,passed,127.42,...
 ```
+
+New columns go at the end, so existing consumers keep working. A cell without a value is empty.
 
 ### HTML
 
@@ -611,6 +784,7 @@ One self-contained page with inline CSS and SVG. It has no scripts.
 - Summary: passed, failed, crashed, and skipped counts.
 - Charts: one SVG per `#[chart]`, in the `#[report]` layout grid.
 - Results: one table per group, nested under parent groups. Each shows the `#[group]` description and tags.
+  - A Throughput column shows the byte rate, else the element rate, else `-`.
 - `[visuals]` sets the theme and the chart canvas size.
 
 ```rust
@@ -640,6 +814,8 @@ Renders verification results in GitHub Actions workflow:
 ```bash
 cargo bench -- --format github-summary >> $GITHUB_STEP_SUMMARY
 ```
+
+A Throughput table lists each benchmark with a byte or element rate. It is absent when no benchmark has one.
 
 ## Advanced Usage
 
@@ -746,7 +922,8 @@ The `examples/` crate contains runnable demos for each feature:
 
 | Example               | What it shows                             |
 | --------------------- | ----------------------------------------- |
-| `feature_iteration`   | `iter`, `iter_with_setup`, `iter_batched` |
+| `feature_iteration`   | `iter`, `iter_with_setup`, `iter_batched` with `BatchSize`, `iter_batched_ref`, `iter_batched_shared`, `iter_custom` |
+| `feature_throughput`  | Bytes and elements per second: attribute, `b.throughput()`, group, `#[verify]` |
 | `feature_async`       | Async benchmarks with tokio runtimes      |
 | `feature_params`      | Parameterized benchmarks with `args`      |
 | `feature_verify`      | `#[verify]` performance assertions        |

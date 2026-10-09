@@ -44,6 +44,7 @@ pub(crate) fn compare_benchmarks(
         return emit_empty_report(cli, config, format, html);
     }
 
-    let execution = execute(cli, config, &selection.selected, jobs)?;
+    let groups = selection.groups.configs();
+    let execution = execute(cli, config, &selection.selected, &groups, jobs)?;
     finish(cli, config, format, html, execution, Some(&baseline))
 }

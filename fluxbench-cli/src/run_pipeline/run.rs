@@ -26,7 +26,8 @@ pub(crate) fn run_benchmarks(
     }
 
     let baseline = optional_baseline(cli, config)?;
-    let execution = execute(cli, config, &selection.selected, jobs)?;
+    let groups = selection.groups.configs();
+    let execution = execute(cli, config, &selection.selected, &groups, jobs)?;
     finish(cli, config, format, html, execution, baseline.as_ref())
 }
 
