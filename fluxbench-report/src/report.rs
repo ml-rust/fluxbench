@@ -72,10 +72,18 @@ pub struct ComparisonSeries {
     pub metric: String,
 }
 
+/// Report schema version this crate writes.
+///
+/// - 1: no raw samples
+/// - 2: saved baselines carry `results[].samples`. Comparisons carry the threshold and difference CI.
+///
+/// Readers accept every version up to this one.
+pub const REPORT_SCHEMA_VERSION: u32 = 2;
+
 /// Report metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportMeta {
-    /// Schema version number
+    /// Schema version number. See [`REPORT_SCHEMA_VERSION`].
     pub schema_version: u32,
     /// Report version string
     pub version: String,
@@ -167,6 +175,11 @@ pub struct BenchmarkReportResult {
     pub comparison: Option<Comparison>,
     /// Failure details (if failed)
     pub failure: Option<FailureInfo>,
+    /// Raw per-sample timings in nanoseconds: each is the mean time of one iteration in that sample.
+    /// These are the values behind `metrics.mean_ns` and its CI.
+    /// Saved baselines carry them. Other reports and schema 1 baselines omit them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples: Option<Vec<f64>>,
 }
 
 /// Benchmark execution status
@@ -285,12 +298,59 @@ pub struct Comparison {
     pub absolute_change_ns: f64,
     /// Relative change from baseline (percentage)
     pub relative_change: f64,
-    /// Probability of regression (0.0 to 1.0)
+    /// Probability that the current mean is slower than the baseline mean (0.0 to 1.0)
     pub probability_regression: f64,
-    /// Whether the change is statistically significant
+    /// The change is statistically significant and its size exceeds `threshold`.
+    /// A positive `relative_change` makes it a regression, a negative one an improvement.
     pub is_significant: bool,
-    /// Effect size (Cohen's d)
+    /// Effect size (Cohen's d, pooled standard deviation)
     pub effect_size: f64,
+    /// Regression threshold percentage applied to this benchmark.
+    /// Reports without this field read as 0.
+    #[serde(default)]
+    pub threshold: f64,
+    /// Lower bound of the CI of (current mean - baseline mean) in nanoseconds
+    #[serde(default)]
+    pub difference_ci_lower_ns: Option<f64>,
+    /// Upper bound of the CI of (current mean - baseline mean) in nanoseconds
+    #[serde(default)]
+    pub difference_ci_upper_ns: Option<f64>,
+    /// Confidence level of the difference CI and the significance check.
+    /// Reports without this field read as 0.95.
+    #[serde(default = "default_confidence_level")]
+    pub confidence_level: f64,
+    /// Statistical method behind the probability and the difference CI
+    #[serde(default)]
+    pub method: ComparisonMethod,
+}
+
+impl Comparison {
+    /// A significant slowdown beyond the threshold
+    pub fn is_regression(&self) -> bool {
+        self.is_significant && self.relative_change > 0.0
+    }
+
+    /// A significant speedup beyond the threshold
+    pub fn is_improvement(&self) -> bool {
+        self.is_significant && self.relative_change < 0.0
+    }
+}
+
+/// Statistical method of a baseline comparison
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComparisonMethod {
+    /// Bootstrap of raw samples from both runs
+    Bootstrap,
+    /// Welch-style z test on mean, std dev, and sample count.
+    /// Used when either side has no raw samples or the bootstrap is off.
+    #[default]
+    Summary,
+}
+
+/// Confidence level for comparisons written before `confidence_level` existed
+fn default_confidence_level() -> f64 {
+    fluxbench_stats::DEFAULT_CONFIDENCE_LEVEL
 }
 
 /// Failure information
@@ -385,6 +445,84 @@ mod tests {
         let value: serde_json::Value = serde_json::to_value(&info).unwrap();
         assert_eq!(value["kind"], "signal");
         assert_eq!(value["signal"], "SIGSEGV");
+    }
+
+    /// A schema 1 result: no `samples`, and a comparison without the schema 2 fields.
+    const SCHEMA_1_RESULT: &str = r#"{
+        "id": "b",
+        "name": "b",
+        "group": "g",
+        "status": "passed",
+        "severity": "Critical",
+        "file": "b.rs",
+        "line": 1,
+        "metrics": null,
+        "threshold": 0.0,
+        "comparison": {
+            "baseline_mean_ns": 100.0,
+            "absolute_change_ns": 8.0,
+            "relative_change": 8.0,
+            "probability_regression": 0.99,
+            "is_significant": true,
+            "effect_size": 2.0
+        },
+        "failure": null
+    }"#;
+
+    #[test]
+    fn schema_1_result_still_parses() {
+        let result: BenchmarkReportResult = serde_json::from_str(SCHEMA_1_RESULT).unwrap();
+        assert_eq!(result.samples, None);
+        let cmp = result.comparison.unwrap();
+        assert!(cmp.is_regression());
+        assert!(!cmp.is_improvement());
+        assert_eq!(cmp.threshold, 0.0);
+        assert_eq!(cmp.difference_ci_lower_ns, None);
+        assert_eq!(cmp.confidence_level, 0.95);
+        assert_eq!(cmp.method, ComparisonMethod::Summary);
+    }
+
+    #[test]
+    fn result_without_samples_omits_the_field() {
+        let mut result: BenchmarkReportResult = serde_json::from_str(SCHEMA_1_RESULT).unwrap();
+        result.samples = None;
+        let value = serde_json::to_value(&result).unwrap();
+        assert!(value.get("samples").is_none());
+    }
+
+    #[test]
+    fn result_samples_roundtrip() {
+        let mut result: BenchmarkReportResult = serde_json::from_str(SCHEMA_1_RESULT).unwrap();
+        result.samples = Some(vec![1.5, 2.0, 2.5]);
+        let json = serde_json::to_string(&result).unwrap();
+        let back: BenchmarkReportResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.samples, Some(vec![1.5, 2.0, 2.5]));
+    }
+
+    #[test]
+    fn comparison_schema_2_fields_roundtrip() {
+        let cmp = Comparison {
+            baseline_mean_ns: 100.0,
+            absolute_change_ns: -10.0,
+            relative_change: -10.0,
+            probability_regression: 0.001,
+            is_significant: true,
+            effect_size: -3.0,
+            threshold: 5.0,
+            difference_ci_lower_ns: Some(-12.0),
+            difference_ci_upper_ns: Some(-8.0),
+            confidence_level: 0.99,
+            method: ComparisonMethod::Bootstrap,
+        };
+        let value = serde_json::to_value(&cmp).unwrap();
+        assert_eq!(value["method"], "bootstrap");
+        let back: Comparison = serde_json::from_value(value).unwrap();
+        assert!(back.is_improvement());
+        assert_eq!(back.threshold, 5.0);
+        assert_eq!(back.difference_ci_lower_ns, Some(-12.0));
+        assert_eq!(back.difference_ci_upper_ns, Some(-8.0));
+        assert_eq!(back.confidence_level, 0.99);
+        assert_eq!(back.method, ComparisonMethod::Bootstrap);
     }
 
     #[test]

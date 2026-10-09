@@ -196,6 +196,7 @@ mod tests {
             threshold: 0.0,
             comparison: None,
             failure: None,
+            samples: None,
         }]);
 
         let json = generate_github_action_benchmark(&report);
@@ -229,6 +230,7 @@ mod tests {
                 backtrace: None,
                 signal: None,
             }),
+            samples: None,
         }]);
 
         let json = generate_github_action_benchmark(&report);
@@ -250,6 +252,7 @@ mod tests {
             threshold: 0.0,
             comparison: None,
             failure: None,
+            samples: None,
         }]);
 
         let json = generate_github_action_benchmark(&report);
@@ -272,6 +275,7 @@ mod tests {
             threshold: 0.0,
             comparison: None,
             failure: None,
+            samples: None,
         }]);
 
         let json = generate_github_action_benchmark(&report);
@@ -297,6 +301,7 @@ mod tests {
             threshold: 0.0,
             comparison: None,
             failure: None,
+            samples: None,
         }]);
 
         let json = generate_github_action_benchmark(&report);

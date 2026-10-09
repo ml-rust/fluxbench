@@ -100,16 +100,16 @@ fn write_baseline_comparison(output: &mut String, report: &Report) {
         if let Some(ref cmp) = result.comparison {
             let baseline = format_duration(cmp.baseline_mean_ns);
             let change = format_change(cmp.relative_change);
-            let status = if cmp.relative_change.abs() < 1.0 {
-                "stable".to_string()
-            } else if cmp.is_significant && cmp.relative_change > 0.0 {
-                if result.threshold > 0.0 {
-                    format!("REGRESSION (>{:.0}%)", result.threshold)
+            let status = if cmp.is_regression() {
+                if cmp.threshold > 0.0 {
+                    format!("REGRESSION (>{}%)", cmp.threshold)
                 } else {
                     "REGRESSION".to_string()
                 }
-            } else if cmp.is_significant && cmp.relative_change < 0.0 {
+            } else if cmp.is_improvement() {
                 "improved".to_string()
+            } else if cmp.relative_change.abs() < 1.0 {
+                "stable".to_string()
             } else {
                 "within noise".to_string()
             };
@@ -129,10 +129,7 @@ fn write_critical_benchmarks(output: &mut String, report: &Report) {
         .iter()
         .filter(|r| {
             r.status != BenchmarkStatus::Passed
-                || r.comparison
-                    .as_ref()
-                    .map(|c| c.relative_change > 5.0)
-                    .unwrap_or(false)
+                || r.comparison.as_ref().is_some_and(|c| c.is_regression())
         })
         .collect();
 
