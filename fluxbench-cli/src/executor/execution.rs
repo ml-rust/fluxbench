@@ -32,10 +32,23 @@
 
 use crate::supervisor::{IpcBenchmarkResult, IpcBenchmarkStatus, Supervisor};
 use fluxbench_core::{Bencher, BenchmarkDef, run_benchmark_loop};
-use fluxbench_ipc::BenchmarkConfig;
+use fluxbench_ipc::{BenchmarkConfig, Sample};
 use fluxbench_report::BenchmarkStatus;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::{Duration, Instant};
+
+/// Mean per-iteration allocation bytes and count across samples.
+///
+/// Each sample already holds a per-iteration average. Returns `(0, 0)` for no samples.
+fn mean_allocations(samples: &[Sample]) -> (u64, u64) {
+    let n = samples.len() as u128;
+    if n == 0 {
+        return (0, 0);
+    }
+    let bytes: u128 = samples.iter().map(|s| u128::from(s.alloc_bytes)).sum();
+    let count: u128 = samples.iter().map(|s| u128::from(s.alloc_count)).sum();
+    ((bytes / n) as u64, (count / n) as u64)
+}
 
 /// Configuration for benchmark execution
 #[derive(Debug, Clone)]
@@ -112,7 +125,9 @@ pub struct BenchExecutionResult {
     pub samples: Vec<f64>,
     /// CPU cycles per sample (parallel with samples)
     pub cpu_cycles: Vec<u64>,
+    /// Mean bytes allocated per iteration across samples
     pub alloc_bytes: u64,
+    /// Mean allocation count per iteration across samples
     pub alloc_count: u64,
     pub duration_ns: u64,
     pub error_message: Option<String>,
@@ -195,13 +210,7 @@ impl Executor {
                 let cpu_cycles: Vec<u64> =
                     bench_result.samples.iter().map(|s| s.cpu_cycles).collect();
 
-                // Sum allocations
-                let alloc_bytes: u64 = bench_result.samples.iter().map(|s| s.alloc_bytes).sum();
-                let alloc_count: u64 = bench_result
-                    .samples
-                    .iter()
-                    .map(|s| s.alloc_count as u64)
-                    .sum();
+                let (alloc_bytes, alloc_count) = mean_allocations(&bench_result.samples);
 
                 BenchExecutionResult {
                     benchmark_id: bench.id.to_string(),
@@ -412,13 +421,7 @@ impl IsolatedExecutor {
         // Extract CPU cycles
         let cpu_cycles: Vec<u64> = ipc_result.samples.iter().map(|s| s.cpu_cycles).collect();
 
-        // Sum allocations
-        let alloc_bytes: u64 = ipc_result.samples.iter().map(|s| s.alloc_bytes).sum();
-        let alloc_count: u64 = ipc_result
-            .samples
-            .iter()
-            .map(|s| s.alloc_count as u64)
-            .sum();
+        let (alloc_bytes, alloc_count) = mean_allocations(&ipc_result.samples);
 
         BenchExecutionResult {
             benchmark_id: bench.id.to_string(),
@@ -438,5 +441,31 @@ impl IsolatedExecutor {
             severity: bench.severity,
             threshold: bench.threshold,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mean_allocations_empty_is_zero() {
+        assert_eq!(mean_allocations(&[]), (0, 0));
+    }
+
+    #[test]
+    fn mean_allocations_single_sample() {
+        let samples = [Sample::new(10, 512, 5, 0)];
+        assert_eq!(mean_allocations(&samples), (512, 5));
+    }
+
+    #[test]
+    fn mean_allocations_is_mean_not_sum() {
+        let samples = [
+            Sample::new(10, 100, 2, 0),
+            Sample::new(10, 200, 4, 0),
+            Sample::new(10, 300, 6, 0),
+        ];
+        assert_eq!(mean_allocations(&samples), (200, 4));
     }
 }

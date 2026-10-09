@@ -5,7 +5,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Thread-local allocation counter
+/// Process-wide allocation counters.
+///
+/// These are global atomics, not thread-local. Counts include allocations from
+/// every thread, so multi-thread async benchmarks include other threads' allocations.
 static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
 static ALLOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
 

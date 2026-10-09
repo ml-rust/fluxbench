@@ -206,9 +206,9 @@ pub struct BenchmarkMetrics {
     pub ci_level: f64,
     /// Throughput in operations per second (if applicable)
     pub throughput_ops_sec: Option<f64>,
-    /// Total bytes allocated during measurement
+    /// Mean bytes allocated per iteration
     pub alloc_bytes: u64,
-    /// Total allocation count during measurement
+    /// Mean allocation count per iteration
     pub alloc_count: u64,
     /// Mean CPU cycles (x86_64 only, 0 on other platforms)
     pub mean_cycles: f64,
