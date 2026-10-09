@@ -37,17 +37,17 @@ use fluxbench_report::BenchmarkStatus;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::{Duration, Instant};
 
-/// Mean per-iteration allocation bytes and count across samples.
+/// Mean per-iteration allocation bytes and count across samples, rounded.
 ///
-/// Each sample already holds a per-iteration average. Returns `(0, 0)` for no samples.
+/// Each sample already holds a per-iteration mean. Returns `(0, 0)` for no samples.
 fn mean_allocations(samples: &[Sample]) -> (u64, u64) {
-    let n = samples.len() as u128;
-    if n == 0 {
+    if samples.is_empty() {
         return (0, 0);
     }
-    let bytes: u128 = samples.iter().map(|s| u128::from(s.alloc_bytes)).sum();
-    let count: u128 = samples.iter().map(|s| u128::from(s.alloc_count)).sum();
-    ((bytes / n) as u64, (count / n) as u64)
+    let n = samples.len() as f64;
+    let bytes: f64 = samples.iter().map(|s| s.alloc_bytes).sum();
+    let count: f64 = samples.iter().map(|s| s.alloc_count).sum();
+    ((bytes / n).round() as u64, (count / n).round() as u64)
 }
 
 /// Configuration for benchmark execution
@@ -57,10 +57,14 @@ pub struct ExecutionConfig {
     pub warmup_time_ns: u64,
     /// Measurement time in nanoseconds
     pub measurement_time_ns: u64,
-    /// Minimum iterations
+    /// Minimum total measurement iterations
     pub min_iterations: Option<u64>,
-    /// Maximum iterations
+    /// Maximum total measurement iterations
     pub max_iterations: Option<u64>,
+    /// Target number of samples
+    pub sample_count: usize,
+    /// Fixed iterations per sample. `Some` selects fixed mode with no warmup.
+    pub iters_per_sample: Option<u64>,
     /// Track allocations
     pub track_allocations: bool,
     /// Number of bootstrap iterations for statistics
@@ -73,18 +77,31 @@ impl ExecutionConfig {
     /// Merge per-benchmark configuration overrides with global defaults.
     ///
     /// Priority:
-    /// 1. Per-benchmark `samples` (if set): overrides everything, runs fixed N iterations with no warmup
-    /// 2. Per-benchmark `warmup_ns`/`measurement_ns`: override global values
-    /// 3. Per-benchmark `min/max_iterations`: override global values
-    /// 4. Falls back to global config for anything not overridden
+    /// 1. Per-benchmark `samples = N`: fixed mode, N samples of one iteration, no warmup
+    /// 2. Per-benchmark `sample_count`: overrides only the count
+    /// 3. Per-benchmark `iters_per_sample`: selects fixed mode with that many iterations
+    /// 4. Per-benchmark `warmup_ns`/`measurement_ns`/`min/max_iterations`: override global values
+    /// 5. Falls back to global config for anything not overridden
+    ///
+    /// Fixed mode sets warmup to 0 and clears min/max iterations.
     pub fn resolve_for_benchmark(&self, bench: &BenchmarkDef) -> ExecutionConfig {
-        // Fixed sample count mode: per-bench samples override everything
-        if let Some(n) = bench.samples {
+        let sample_count = bench
+            .sample_count
+            .or(bench.samples)
+            .map_or(self.sample_count, |n| n as usize);
+        let iters_per_sample = bench
+            .iters_per_sample
+            .or(bench.samples.map(|_| 1))
+            .or(self.iters_per_sample);
+
+        if iters_per_sample.is_some() {
             return ExecutionConfig {
                 warmup_time_ns: 0,
-                measurement_time_ns: 0,
-                min_iterations: Some(n),
-                max_iterations: Some(n),
+                measurement_time_ns: bench.measurement_ns.unwrap_or(self.measurement_time_ns),
+                min_iterations: None,
+                max_iterations: None,
+                sample_count,
+                iters_per_sample,
                 ..self.clone()
             };
         }
@@ -94,7 +111,24 @@ impl ExecutionConfig {
             measurement_time_ns: bench.measurement_ns.unwrap_or(self.measurement_time_ns),
             min_iterations: bench.min_iterations.or(self.min_iterations),
             max_iterations: bench.max_iterations.or(self.max_iterations),
+            sample_count,
+            iters_per_sample: None,
             ..self.clone()
+        }
+    }
+
+    /// Build the IPC config for one worker run.
+    pub fn to_ipc_config(&self, timeout: Duration) -> BenchmarkConfig {
+        BenchmarkConfig {
+            warmup_time_ns: self.warmup_time_ns,
+            measurement_time_ns: self.measurement_time_ns,
+            min_iterations: self.min_iterations,
+            max_iterations: self.max_iterations,
+            sample_count: u32::try_from(self.sample_count).unwrap_or(u32::MAX),
+            iters_per_sample: self.iters_per_sample,
+            track_allocations: self.track_allocations,
+            fail_on_allocation: false,
+            timeout_ns: timeout.as_nanos() as u64,
         }
     }
 }
@@ -106,6 +140,8 @@ impl Default for ExecutionConfig {
             measurement_time_ns: 5_000_000_000, // 5 seconds
             min_iterations: Some(100),
             max_iterations: None,
+            sample_count: fluxbench_core::DEFAULT_SAMPLE_COUNT,
+            iters_per_sample: None,
             track_allocations: true,
             bootstrap_iterations: 100_000, // Matches Criterion default
             confidence_level: 0.95,
@@ -123,8 +159,8 @@ pub struct BenchExecutionResult {
     pub line: u32,
     pub status: BenchmarkStatus,
     pub samples: Vec<f64>,
-    /// CPU cycles per sample (parallel with samples)
-    pub cpu_cycles: Vec<u64>,
+    /// Mean CPU cycles per iteration for each sample (parallel with samples)
+    pub cpu_cycles: Vec<f64>,
     /// Mean bytes allocated per iteration across samples
     pub alloc_bytes: u64,
     /// Mean allocation count per iteration across samples
@@ -183,7 +219,11 @@ impl Executor {
 
         // Run with panic catching
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let bencher = Bencher::new(cfg.track_allocations);
+            let bencher = Bencher::for_config(
+                cfg.track_allocations,
+                cfg.sample_count,
+                cfg.iters_per_sample,
+            );
 
             run_benchmark_loop(
                 bencher,
@@ -203,11 +243,11 @@ impl Executor {
                 let samples: Vec<f64> = bench_result
                     .samples
                     .iter()
-                    .map(|s| s.duration_nanos as f64)
+                    .map(|s| s.duration_nanos)
                     .collect();
 
                 // Extract CPU cycles (parallel array with samples)
-                let cpu_cycles: Vec<u64> =
+                let cpu_cycles: Vec<f64> =
                     bench_result.samples.iter().map(|s| s.cpu_cycles).collect();
 
                 let (alloc_bytes, alloc_count) = mean_allocations(&bench_result.samples);
@@ -307,29 +347,17 @@ impl IsolatedExecutor {
         let ipc_configs: Vec<BenchmarkConfig> = benchmarks
             .iter()
             .map(|bench| {
-                let cfg = self.config.resolve_for_benchmark(bench);
-                BenchmarkConfig {
-                    warmup_time_ns: cfg.warmup_time_ns,
-                    measurement_time_ns: cfg.measurement_time_ns,
-                    min_iterations: cfg.min_iterations,
-                    max_iterations: cfg.max_iterations,
-                    track_allocations: cfg.track_allocations,
-                    fail_on_allocation: false,
-                    timeout_ns: self.timeout.as_nanos() as u64,
-                }
+                self.config
+                    .resolve_for_benchmark(bench)
+                    .to_ipc_config(self.timeout)
             })
             .collect();
 
         // Use the first config as default for the supervisor
-        let default_config = ipc_configs.first().cloned().unwrap_or(BenchmarkConfig {
-            warmup_time_ns: self.config.warmup_time_ns,
-            measurement_time_ns: self.config.measurement_time_ns,
-            min_iterations: self.config.min_iterations,
-            max_iterations: self.config.max_iterations,
-            track_allocations: self.config.track_allocations,
-            fail_on_allocation: false,
-            timeout_ns: self.timeout.as_nanos() as u64,
-        });
+        let default_config = ipc_configs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| self.config.to_ipc_config(self.timeout));
 
         let supervisor = Supervisor::new(default_config, self.timeout, self.num_workers);
 
@@ -415,11 +443,11 @@ impl IsolatedExecutor {
         let samples: Vec<f64> = ipc_result
             .samples
             .iter()
-            .map(|s| s.duration_nanos as f64)
+            .map(|s| s.duration_nanos)
             .collect();
 
         // Extract CPU cycles
-        let cpu_cycles: Vec<u64> = ipc_result.samples.iter().map(|s| s.cpu_cycles).collect();
+        let cpu_cycles: Vec<f64> = ipc_result.samples.iter().map(|s| s.cpu_cycles).collect();
 
         let (alloc_bytes, alloc_count) = mean_allocations(&ipc_result.samples);
 
@@ -447,6 +475,118 @@ impl IsolatedExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluxbench_core::Severity;
+
+    fn bench_def() -> BenchmarkDef {
+        BenchmarkDef {
+            id: "b",
+            name: "b",
+            group: "default",
+            severity: Severity::Info,
+            threshold: 0.0,
+            budget_ns: None,
+            tags: &[],
+            runner_fn: |_| {},
+            file: "",
+            line: 0,
+            module_path: "",
+            warmup_ns: None,
+            measurement_ns: None,
+            samples: None,
+            sample_count: None,
+            iters_per_sample: None,
+            min_iterations: None,
+            max_iterations: None,
+            depends_on: &[],
+        }
+    }
+
+    #[test]
+    fn resolve_keeps_global_sample_count() {
+        let global = ExecutionConfig {
+            sample_count: 300,
+            ..Default::default()
+        };
+        let cfg = global.resolve_for_benchmark(&bench_def());
+        assert_eq!(cfg.sample_count, 300);
+        assert_eq!(cfg.iters_per_sample, None);
+        assert_eq!(cfg.warmup_time_ns, global.warmup_time_ns);
+    }
+
+    #[test]
+    fn resolve_bench_sample_count_overrides_only_the_count() {
+        let global = ExecutionConfig {
+            sample_count: 300,
+            ..Default::default()
+        };
+        let bench = BenchmarkDef {
+            sample_count: Some(40),
+            ..bench_def()
+        };
+        let cfg = global.resolve_for_benchmark(&bench);
+        assert_eq!(cfg.sample_count, 40);
+        assert_eq!(cfg.iters_per_sample, None);
+        assert_eq!(cfg.warmup_time_ns, global.warmup_time_ns);
+        assert_eq!(cfg.min_iterations, global.min_iterations);
+    }
+
+    #[test]
+    fn resolve_bench_samples_selects_fixed_mode() {
+        let bench = BenchmarkDef {
+            samples: Some(500),
+            ..bench_def()
+        };
+        let cfg = ExecutionConfig::default().resolve_for_benchmark(&bench);
+        assert_eq!(cfg.sample_count, 500);
+        assert_eq!(cfg.iters_per_sample, Some(1));
+        assert_eq!(cfg.warmup_time_ns, 0);
+        assert_eq!(cfg.min_iterations, None);
+        assert_eq!(cfg.max_iterations, None);
+    }
+
+    #[test]
+    fn resolve_bench_sample_count_beats_bench_samples() {
+        let bench = BenchmarkDef {
+            samples: Some(500),
+            sample_count: Some(20),
+            ..bench_def()
+        };
+        let cfg = ExecutionConfig::default().resolve_for_benchmark(&bench);
+        assert_eq!(cfg.sample_count, 20);
+        assert_eq!(cfg.iters_per_sample, Some(1));
+    }
+
+    #[test]
+    fn resolve_bench_beats_global_fixed_mode() {
+        let global = ExecutionConfig {
+            sample_count: 7,
+            iters_per_sample: Some(1),
+            warmup_time_ns: 0,
+            ..Default::default()
+        };
+        let bench = BenchmarkDef {
+            sample_count: Some(250),
+            iters_per_sample: Some(4),
+            ..bench_def()
+        };
+        let cfg = global.resolve_for_benchmark(&bench);
+        assert_eq!(cfg.sample_count, 250);
+        assert_eq!(cfg.iters_per_sample, Some(4));
+    }
+
+    #[test]
+    fn ipc_config_carries_sample_fields() {
+        let cfg = ExecutionConfig {
+            sample_count: 250,
+            iters_per_sample: Some(2),
+            warmup_time_ns: 0,
+            ..Default::default()
+        };
+        let ipc = cfg.to_ipc_config(Duration::from_secs(60));
+        assert_eq!(ipc.sample_count, 250);
+        assert_eq!(ipc.iters_per_sample, Some(2));
+        assert!(ipc.validate().is_ok());
+    }
 
     #[test]
     fn mean_allocations_empty_is_zero() {
@@ -455,16 +595,25 @@ mod tests {
 
     #[test]
     fn mean_allocations_single_sample() {
-        let samples = [Sample::new(10, 512, 5, 0)];
+        let samples = [Sample::new(10.0, 0.0, 512.0, 5.0, 1)];
         assert_eq!(mean_allocations(&samples), (512, 5));
+    }
+
+    #[test]
+    fn mean_allocations_rounds_fractional_means() {
+        let samples = [
+            Sample::new(10.0, 0.0, 100.25, 0.5, 4),
+            Sample::new(10.0, 0.0, 100.75, 1.0, 4),
+        ];
+        assert_eq!(mean_allocations(&samples), (101, 1));
     }
 
     #[test]
     fn mean_allocations_is_mean_not_sum() {
         let samples = [
-            Sample::new(10, 100, 2, 0),
-            Sample::new(10, 200, 4, 0),
-            Sample::new(10, 300, 6, 0),
+            Sample::new(10.0, 0.0, 100.0, 2.0, 1),
+            Sample::new(10.0, 0.0, 200.0, 4.0, 1),
+            Sample::new(10.0, 0.0, 300.0, 6.0, 1),
         ];
         assert_eq!(mean_allocations(&samples), (200, 4));
     }

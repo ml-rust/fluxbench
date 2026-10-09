@@ -225,22 +225,20 @@ impl SummaryStatistics {
     }
 }
 
-/// Compute CPU cycles statistics from raw cycle counts
+/// Compute CPU cycles statistics from per-sample mean cycle counts
 ///
 /// Takes parallel arrays of cycles and nanos to compute cycles_per_ns ratio.
-pub fn compute_cycles_stats(cycles: &[u64], nanos: &[f64]) -> CyclesStatistics {
+/// Min and max round to the nearest whole cycle.
+pub fn compute_cycles_stats(cycles: &[f64], nanos: &[f64]) -> CyclesStatistics {
     if cycles.is_empty() {
         return CyclesStatistics::default();
     }
 
-    // Convert to f64 for statistical calculations
-    let cycles_f64: Vec<f64> = cycles.iter().map(|&c| c as f64).collect();
-
     // Mean cycles
-    let mean_cycles = cycles_f64.iter().sum::<f64>() / cycles_f64.len() as f64;
+    let mean_cycles = cycles.iter().sum::<f64>() / cycles.len() as f64;
 
     // Median cycles
-    let mut sorted = cycles_f64.clone();
+    let mut sorted = cycles.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median_cycles = if sorted.len() % 2 == 0 {
         let mid = sorted.len() / 2;
@@ -253,22 +251,22 @@ pub fn compute_cycles_stats(cycles: &[u64], nanos: &[f64]) -> CyclesStatistics {
     let std_dev_cycles = if cycles.len() < 2 {
         0.0
     } else {
-        let variance = cycles_f64
+        let variance = cycles
             .iter()
             .map(|x| (x - mean_cycles).powi(2))
             .sum::<f64>()
-            / (cycles_f64.len() - 1) as f64;
+            / (cycles.len() - 1) as f64;
         variance.sqrt()
     };
 
     // Min/max
-    let min_cycles = *cycles.iter().min().unwrap_or(&0);
-    let max_cycles = *cycles.iter().max().unwrap_or(&0);
+    let min_cycles = sorted.first().map_or(0, |c| c.round() as u64);
+    let max_cycles = sorted.last().map_or(0, |c| c.round() as u64);
 
     // Cycles per nanosecond (CPU frequency approximation)
     let cycles_per_ns = if !nanos.is_empty() {
         let total_nanos: f64 = nanos.iter().sum();
-        let total_cycles: f64 = cycles_f64.iter().sum();
+        let total_cycles: f64 = cycles.iter().sum();
         if total_nanos > 0.0 {
             total_cycles / total_nanos
         } else {
@@ -401,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_cycles_stats() {
-        let cycles = vec![3000u64, 3100, 2900, 3050, 2950];
+        let cycles = vec![3000.0, 3100.4, 2899.6, 3050.0, 2950.0];
         let nanos = vec![1000.0, 1033.0, 967.0, 1017.0, 983.0];
         let stats = compute_cycles_stats(&cycles, &nanos);
 
@@ -415,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_cycles_stats_empty() {
-        let cycles: Vec<u64> = vec![];
+        let cycles: Vec<f64> = vec![];
         let nanos: Vec<f64> = vec![];
         let stats = compute_cycles_stats(&cycles, &nanos);
 

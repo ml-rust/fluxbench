@@ -172,6 +172,8 @@ mod tests {
             warmup_ns: None,
             measurement_ns: None,
             samples: None,
+            sample_count: None,
+            iters_per_sample: None,
             min_iterations: None,
             max_iterations: None,
             depends_on,

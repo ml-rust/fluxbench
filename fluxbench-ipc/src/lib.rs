@@ -11,13 +11,15 @@ mod ring_buffer;
 
 pub use framing::{FrameError, FrameReader, FrameWriter, MAX_FRAME_SIZE, read_frame, write_frame};
 pub use messages::{
-    BenchmarkConfig, FailureKind, FlushReason, Sample, SampleBatch, SupervisorCommand,
-    WorkerCapabilities, WorkerMessage,
+    BenchmarkConfig, DEFAULT_SAMPLE_COUNT, FailureKind, FlushReason, Sample, SampleBatch,
+    SupervisorCommand, WorkerCapabilities, WorkerMessage,
 };
 pub use ring_buffer::SampleRingBuffer;
 
-/// Protocol version for compatibility checking
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Protocol version for compatibility checking.
+///
+/// Version 2 carries `f64` sample means and the per-sample iteration count.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Maximum samples per batch (prevents unbounded memory growth)
 pub const MAX_BATCH_SIZE: usize = 10_000;
@@ -34,8 +36,8 @@ mod tests {
 
     #[test]
     fn test_sample_size() {
-        // Sample is 32 bytes (u64 cpu_cycles avoids overflow for benchmarks >1s)
-        assert_eq!(std::mem::size_of::<Sample>(), 32);
+        // Four f64 means plus a u64 iteration count
+        assert_eq!(std::mem::size_of::<Sample>(), 40);
     }
 
     #[test]

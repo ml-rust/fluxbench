@@ -180,6 +180,25 @@ fn send_sigterm(pid: u32) -> Result<(), std::io::Error> {
     }
 }
 
+/// Check the first worker message: it must be `Hello` with this protocol version.
+fn check_hello(msg: WorkerMessage) -> Result<WorkerCapabilities, SupervisorError> {
+    match msg {
+        WorkerMessage::Hello(caps) => {
+            if caps.protocol_version != fluxbench_ipc::PROTOCOL_VERSION {
+                return Err(SupervisorError::ProtocolError {
+                    expected: format!("protocol version {}", fluxbench_ipc::PROTOCOL_VERSION),
+                    got: format!("protocol version {}", caps.protocol_version),
+                });
+            }
+            Ok(caps)
+        }
+        other => Err(SupervisorError::ProtocolError {
+            expected: "Hello".to_string(),
+            got: format!("{:?}", other),
+        }),
+    }
+}
+
 // ─── WorkerHandle ────────────────────────────────────────────────────────────
 
 /// Worker process handle.
@@ -338,23 +357,8 @@ impl WorkerHandle {
     /// Wait for Hello message from worker and validate protocol version
     fn wait_for_hello(&mut self) -> Result<(), SupervisorError> {
         let msg: WorkerMessage = self.reader.read()?;
-
-        match msg {
-            WorkerMessage::Hello(caps) => {
-                if caps.protocol_version != fluxbench_ipc::PROTOCOL_VERSION {
-                    return Err(SupervisorError::ProtocolError {
-                        expected: format!("protocol version {}", fluxbench_ipc::PROTOCOL_VERSION),
-                        got: format!("protocol version {}", caps.protocol_version),
-                    });
-                }
-                self.capabilities = Some(caps);
-                Ok(())
-            }
-            other => Err(SupervisorError::ProtocolError {
-                expected: "Hello".to_string(),
-                got: format!("{:?}", other),
-            }),
-        }
+        self.capabilities = Some(check_hello(msg)?);
+        Ok(())
     }
 
     /// Get worker capabilities
@@ -871,5 +875,37 @@ mod tests {
         let config = BenchmarkConfig::default();
         let supervisor = Supervisor::new(config, timeout, 1);
         assert_eq!(supervisor.num_workers, 1);
+    }
+
+    #[test]
+    fn check_hello_accepts_current_protocol() {
+        let caps = WorkerCapabilities::default();
+        let checked = check_hello(WorkerMessage::Hello(caps));
+        assert!(checked.is_ok());
+    }
+
+    #[test]
+    fn check_hello_rejects_v1_worker() {
+        let caps = WorkerCapabilities {
+            protocol_version: 1,
+            ..WorkerCapabilities::default()
+        };
+        let err = check_hello(WorkerMessage::Hello(caps));
+        assert!(matches!(
+            err,
+            Err(SupervisorError::ProtocolError { ref got, .. }) if got == "protocol version 1"
+        ));
+    }
+
+    #[test]
+    fn check_hello_rejects_non_hello() {
+        let msg = WorkerMessage::Progress {
+            completed: 0,
+            estimated_total: 0,
+        };
+        assert!(matches!(
+            check_hello(msg),
+            Err(SupervisorError::ProtocolError { .. })
+        ));
     }
 }

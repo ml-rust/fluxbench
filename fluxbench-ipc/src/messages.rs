@@ -4,47 +4,57 @@
 
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 
-/// A single measurement sample (32 bytes, cache-aligned).
+/// One measurement sample (40 bytes, 8-byte aligned).
 ///
-/// Compact representation optimized for batching and cache efficiency.
-/// All timing values are in nanoseconds.
+/// Each field except `iterations` holds a per-iteration mean over the sample.
+/// `iterations` counts the routine calls in the sample.
 ///
 /// # Layout history
-/// - Protocol v1: 24 bytes (`cpu_cycles` was `u32`).
-/// - Protocol v2+: 32 bytes (`cpu_cycles` widened to `u64` to avoid overflow beyond ~1 s at 4 GHz).
-#[derive(Debug, Clone, Copy, Archive, RkyvSerialize, RkyvDeserialize)]
+/// - Protocol v1: 32 bytes of integer per-iteration means.
+/// - Protocol v2: 40 bytes of `f64` means plus the `iterations` count.
+#[derive(Debug, Clone, Copy, PartialEq, Archive, RkyvSerialize, RkyvDeserialize)]
 #[repr(C, align(8))]
 pub struct Sample {
-    /// Duration of this iteration in nanoseconds
-    pub duration_nanos: u64,
-    /// Bytes allocated during this iteration
-    pub alloc_bytes: u64,
-    /// Number of allocations during this iteration
-    pub alloc_count: u32,
-    /// CPU cycles (from RDTSC). Full u64 avoids overflow for benchmarks >1s at 4GHz.
-    pub cpu_cycles: u64,
+    /// Mean duration per iteration in nanoseconds
+    pub duration_nanos: f64,
+    /// Mean CPU cycles per iteration (0 without a cycle counter)
+    pub cpu_cycles: f64,
+    /// Mean bytes allocated per iteration
+    pub alloc_bytes: f64,
+    /// Mean allocation count per iteration
+    pub alloc_count: f64,
+    /// Routine calls in this sample
+    pub iterations: u64,
 }
 
 impl Sample {
-    /// Create a new sample with the given measurements
+    /// Create a sample from per-iteration means and the call count
     #[inline]
-    pub fn new(duration_nanos: u64, alloc_bytes: u64, alloc_count: u32, cpu_cycles: u64) -> Self {
+    pub fn new(
+        duration_nanos: f64,
+        cpu_cycles: f64,
+        alloc_bytes: f64,
+        alloc_count: f64,
+        iterations: u64,
+    ) -> Self {
         Self {
             duration_nanos,
+            cpu_cycles,
             alloc_bytes,
             alloc_count,
-            cpu_cycles,
+            iterations,
         }
     }
 
-    /// Create a timing-only sample (no allocation tracking)
+    /// Create a timing-only sample of one call (no cycles, no allocations)
     #[inline]
-    pub fn timing_only(duration_nanos: u64) -> Self {
+    pub fn timing_only(duration_nanos: f64) -> Self {
         Self {
             duration_nanos,
-            alloc_bytes: 0,
-            alloc_count: 0,
-            cpu_cycles: 0,
+            cpu_cycles: 0.0,
+            alloc_bytes: 0.0,
+            alloc_count: 0.0,
+            iterations: 1,
         }
     }
 }
@@ -209,10 +219,14 @@ pub struct BenchmarkConfig {
     pub warmup_time_ns: u64,
     /// Measurement time in nanoseconds
     pub measurement_time_ns: u64,
-    /// Minimum number of iterations (overrides time-based)
+    /// Minimum total measurement iterations (overrides time-based)
     pub min_iterations: Option<u64>,
-    /// Maximum number of iterations (cap)
+    /// Maximum total measurement iterations (cap)
     pub max_iterations: Option<u64>,
+    /// Target number of samples
+    pub sample_count: u32,
+    /// Fixed iterations per sample. `Some` selects fixed mode with no warmup.
+    pub iters_per_sample: Option<u64>,
     /// Whether to track allocations
     pub track_allocations: bool,
     /// Whether to fail on any allocation (for hot path testing)
@@ -228,6 +242,8 @@ impl Default for BenchmarkConfig {
             measurement_time_ns: 5_000_000_000, // 5 seconds
             min_iterations: Some(100),
             max_iterations: None,
+            sample_count: DEFAULT_SAMPLE_COUNT,
+            iters_per_sample: None,
             track_allocations: true,
             fail_on_allocation: false,
             timeout_ns: 60_000_000_000, // 60 seconds
@@ -235,11 +251,23 @@ impl Default for BenchmarkConfig {
     }
 }
 
+/// Default target sample count (matches Criterion)
+pub const DEFAULT_SAMPLE_COUNT: u32 = 100;
+
 impl BenchmarkConfig {
     /// Validate configuration values, returning a description of the first error found.
     pub fn validate(&self) -> Result<(), String> {
-        if self.warmup_time_ns == 0 {
-            return Err("warmup_time_ns must be > 0".to_string());
+        if self.warmup_time_ns == 0 && self.iters_per_sample.is_none() {
+            return Err("warmup_time_ns must be > 0 unless iters_per_sample is set".to_string());
+        }
+        if self.sample_count < 2 {
+            return Err(format!(
+                "sample_count must be >= 2, got {}",
+                self.sample_count
+            ));
+        }
+        if self.iters_per_sample == Some(0) {
+            return Err("iters_per_sample must be > 0".to_string());
         }
         if self.measurement_time_ns == 0 {
             return Err("measurement_time_ns must be > 0".to_string());
@@ -295,27 +323,63 @@ fn cpu_model_string() -> String {
 mod tests {
     use super::*;
 
+    use rkyv::rancor;
+
     #[test]
     fn test_sample_creation() {
-        let sample = Sample::new(1000, 512, 5, 4000);
-        assert_eq!(sample.duration_nanos, 1000);
-        assert_eq!(sample.alloc_bytes, 512);
-        assert_eq!(sample.alloc_count, 5);
-        assert_eq!(sample.cpu_cycles, 4000);
+        let sample = Sample::new(1000.5, 4000.25, 512.0, 5.5, 7);
+        assert_eq!(sample.duration_nanos, 1000.5);
+        assert_eq!(sample.cpu_cycles, 4000.25);
+        assert_eq!(sample.alloc_bytes, 512.0);
+        assert_eq!(sample.alloc_count, 5.5);
+        assert_eq!(sample.iterations, 7);
     }
 
     #[test]
     fn test_sample_timing_only() {
-        let sample = Sample::timing_only(5000);
-        assert_eq!(sample.duration_nanos, 5000);
-        assert_eq!(sample.alloc_bytes, 0);
-        assert_eq!(sample.alloc_count, 0);
-        assert_eq!(sample.cpu_cycles, 0);
+        let sample = Sample::timing_only(5000.0);
+        assert_eq!(sample.duration_nanos, 5000.0);
+        assert_eq!(sample.alloc_bytes, 0.0);
+        assert_eq!(sample.alloc_count, 0.0);
+        assert_eq!(sample.cpu_cycles, 0.0);
+        assert_eq!(sample.iterations, 1);
+    }
+
+    #[test]
+    fn test_sample_size_is_40_bytes() {
+        assert_eq!(std::mem::size_of::<Sample>(), 40);
+    }
+
+    #[test]
+    fn test_sample_rkyv_roundtrip() {
+        let original = Sample::new(12.75, 48.5, 1024.0, 2.25, 4096);
+        let bytes = rkyv::to_bytes::<rancor::Error>(&original).unwrap();
+        let decoded = rkyv::from_bytes::<Sample, rancor::Error>(&bytes).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_benchmark_config_rkyv_roundtrip() {
+        let original = BenchmarkConfig {
+            sample_count: 250,
+            iters_per_sample: Some(3),
+            warmup_time_ns: 0,
+            ..Default::default()
+        };
+        let bytes = rkyv::to_bytes::<rancor::Error>(&original).unwrap();
+        let decoded = rkyv::from_bytes::<BenchmarkConfig, rancor::Error>(&bytes).unwrap();
+        assert_eq!(decoded.sample_count, 250);
+        assert_eq!(decoded.iters_per_sample, Some(3));
+        assert_eq!(decoded.warmup_time_ns, 0);
+        assert_eq!(decoded.measurement_time_ns, original.measurement_time_ns);
     }
 
     #[test]
     fn test_benchmark_config_validate_default() {
-        assert!(BenchmarkConfig::default().validate().is_ok());
+        let config = BenchmarkConfig::default();
+        assert_eq!(config.sample_count, DEFAULT_SAMPLE_COUNT);
+        assert_eq!(config.iters_per_sample, None);
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -325,6 +389,42 @@ mod tests {
             ..Default::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_benchmark_config_validate_fixed_mode_zero_warmup() {
+        let config = BenchmarkConfig {
+            warmup_time_ns: 0,
+            iters_per_sample: Some(1),
+            sample_count: 500,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_benchmark_config_validate_zero_iters_per_sample() {
+        let config = BenchmarkConfig {
+            iters_per_sample: Some(0),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_benchmark_config_validate_sample_count_floor() {
+        for sample_count in [0, 1] {
+            let config = BenchmarkConfig {
+                sample_count,
+                ..Default::default()
+            };
+            assert!(config.validate().is_err());
+        }
+        let config = BenchmarkConfig {
+            sample_count: 2,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
     }
 
     #[test]

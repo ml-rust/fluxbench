@@ -592,6 +592,8 @@ mod tests {
                     measurement_time_ns: 0,
                     min_iterations: None,
                     max_iterations: None,
+                    sample_count: 100,
+                    iters_per_sample: None,
                     bootstrap_iterations: 0,
                     confidence_level: 0.95,
                     track_allocations: false,

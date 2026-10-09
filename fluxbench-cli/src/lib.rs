@@ -23,6 +23,7 @@
 mod config;
 mod executor;
 mod planner;
+mod run_config;
 mod status;
 mod supervisor;
 
@@ -92,24 +93,32 @@ pub struct Cli {
     #[arg(long)]
     pub skip_tag: Option<String>,
 
-    /// Warmup time in seconds
-    #[arg(long, default_value = "3")]
-    pub warmup: u64,
+    /// Warmup time, e.g. `3s` or `500ms`. A bare number means seconds. [default: 3s]
+    ///
+    /// Held in nanoseconds. It overrides flux.toml when set.
+    #[arg(long, value_parser = config::parse_duration_arg)]
+    pub warmup: Option<u64>,
 
-    /// Measurement time in seconds
-    #[arg(long, default_value = "5")]
-    pub measurement: u64,
+    /// Measurement time, e.g. `5s` or `500ms`. A bare number means seconds. [default: 5s]
+    ///
+    /// Held in nanoseconds. It overrides flux.toml when set.
+    #[arg(long, value_parser = config::parse_duration_arg)]
+    pub measurement: Option<u64>,
 
-    /// Fixed sample count mode: skip warmup, run exactly N iterations
-    /// Each iteration becomes one sample. Overrides warmup/measurement/min/max.
-    #[arg(long, short = 'n')]
+    /// Fixed mode: N samples of one iteration each, no warmup.
+    /// Ignores warmup and min/max iterations. `--sample-count` overrides N.
+    #[arg(long, short = 'n', value_parser = clap::value_parser!(u64).range(2..))]
     pub samples: Option<u64>,
 
-    /// Minimum number of iterations
+    /// Target sample count (minimum 2, no upper cap) [default: 100]
+    #[arg(long, value_parser = clap::value_parser!(u64).range(2..))]
+    pub sample_count: Option<u64>,
+
+    /// Minimum total measurement iterations
     #[arg(long)]
     pub min_iterations: Option<u64>,
 
-    /// Maximum number of iterations
+    /// Maximum total measurement iterations
     #[arg(long)]
     pub max_iterations: Option<u64>,
 
@@ -131,9 +140,11 @@ pub struct Cli {
     #[arg(long, default_value = "60")]
     pub worker_timeout: u64,
 
-    /// Number of parallel isolated workers
-    #[arg(long, default_value = "1")]
-    pub jobs: usize,
+    /// Number of parallel isolated workers [default: 1]
+    ///
+    /// It overrides flux.toml when set.
+    #[arg(long)]
+    pub jobs: Option<usize>,
 
     /// Number of threads for parallel statistics computation
     /// 0 = use all available cores (default), 1 = single-threaded
@@ -203,12 +214,7 @@ pub fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
     // Parse output format
     let format: OutputFormat = cli.format.parse().unwrap_or(OutputFormat::Human);
 
-    // Resolve jobs: CLI wins if explicitly set (not default 1), else flux.toml, else 1
-    let jobs = if cli.jobs != 1 {
-        cli.jobs
-    } else {
-        config.runner.jobs.unwrap_or(1)
-    };
+    let jobs = run_config::resolve_jobs(&cli, &config);
 
     match cli.command {
         Some(Commands::List) => {
@@ -312,57 +318,6 @@ fn list_benchmarks(cli: &Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build an ExecutionConfig by layering: flux.toml defaults → CLI overrides.
-fn build_execution_config(cli: &Cli, config: &FluxConfig) -> ExecutionConfig {
-    // Start from flux.toml values (parsed durations fall back to defaults on error)
-    let warmup_ns = FluxConfig::parse_duration(&config.runner.warmup_time).unwrap_or(3_000_000_000);
-    let measurement_ns =
-        FluxConfig::parse_duration(&config.runner.measurement_time).unwrap_or(5_000_000_000);
-
-    // CLI flags override config file values.
-    // clap defaults are warmup=3, measurement=5, so we check if the user explicitly
-    // passed different values by comparing against clap defaults. If the CLI value
-    // differs from clap's default, the user explicitly set it and it wins.
-    let warmup_time_ns = if cli.warmup != 3 {
-        cli.warmup * 1_000_000_000
-    } else {
-        warmup_ns
-    };
-    let measurement_time_ns = if cli.measurement != 5 {
-        cli.measurement * 1_000_000_000
-    } else {
-        measurement_ns
-    };
-
-    // --samples N: fixed-count mode, no warmup, each iteration = one sample
-    // CLI wins, then flux.toml
-    if let Some(n) = cli.samples.or(config.runner.samples) {
-        return ExecutionConfig {
-            warmup_time_ns: 0,
-            measurement_time_ns: 0,
-            min_iterations: Some(n),
-            max_iterations: Some(n),
-            track_allocations: config.allocator.track,
-            bootstrap_iterations: config.runner.bootstrap_iterations,
-            confidence_level: config.runner.confidence_level,
-        };
-    }
-
-    // min/max iterations: CLI wins if set, else config, else default
-    let min_iterations = cli.min_iterations.or(config.runner.min_iterations);
-    let max_iterations = cli.max_iterations.or(config.runner.max_iterations);
-
-    ExecutionConfig {
-        warmup_time_ns,
-        measurement_time_ns,
-        min_iterations,
-        max_iterations,
-        track_allocations: config.allocator.track,
-        bootstrap_iterations: config.runner.bootstrap_iterations,
-        confidence_level: config.runner.confidence_level,
-    }
-}
-
 fn run_benchmarks(
     cli: &Cli,
     config: &FluxConfig,
@@ -429,7 +384,7 @@ fn run_benchmarks(
     let start_time = Instant::now();
 
     // Build execution config from flux.toml + CLI overrides
-    let exec_config = build_execution_config(cli, config);
+    let exec_config = run_config::build_execution_config(cli, config);
 
     if exec_config.bootstrap_iterations > 0 && exec_config.bootstrap_iterations < 100 {
         eprintln!(
@@ -621,7 +576,7 @@ fn compare_benchmarks(
 
     let start_time = Instant::now();
 
-    let exec_config = build_execution_config(cli, config);
+    let exec_config = run_config::build_execution_config(cli, config);
 
     let mut executor = Executor::new(exec_config.clone());
     let results = executor.execute(&benchmarks);
@@ -957,6 +912,8 @@ mod tests {
                 measurement_time_ns: 0,
                 min_iterations: None,
                 max_iterations: None,
+                sample_count: 100,
+                iters_per_sample: None,
                 bootstrap_iterations: 0,
                 confidence_level: 0.95,
                 track_allocations: false,

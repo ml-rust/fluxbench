@@ -13,7 +13,10 @@ mod measure;
 mod worker;
 
 pub use allocator::{TrackingAllocator, current_allocation, reset_allocation_counter};
-pub use bencher::{Bencher, BenchmarkResult, IterationMode, run_benchmark_loop};
+pub use bencher::{
+    Bencher, BenchmarkResult, DEFAULT_SAMPLE_COUNT, IterationMode, MIN_SAMPLE_COUNT,
+    run_benchmark_loop,
+};
 /// Whether this platform provides hardware cycle counters (x86_64 RDTSCP or AArch64 CNTVCT_EL0).
 /// When `false`, cycle counts are reported as 0 and only wall-clock nanoseconds are available.
 pub use measure::HAS_CYCLE_COUNTER;
@@ -50,11 +53,15 @@ pub struct BenchmarkDef {
     pub warmup_ns: Option<u64>,
     /// Per-benchmark measurement override (nanoseconds)
     pub measurement_ns: Option<u64>,
-    /// Per-benchmark fixed sample count
+    /// Per-benchmark fixed mode: N samples of one iteration each, no warmup
     pub samples: Option<u64>,
-    /// Per-benchmark minimum iterations
+    /// Per-benchmark target sample count. It overrides only the count.
+    pub sample_count: Option<u64>,
+    /// Per-benchmark fixed iterations per sample. `Some` selects fixed mode.
+    pub iters_per_sample: Option<u64>,
+    /// Per-benchmark minimum total measurement iterations
     pub min_iterations: Option<u64>,
-    /// Per-benchmark maximum iterations
+    /// Per-benchmark maximum total measurement iterations
     pub max_iterations: Option<u64>,
     /// Benchmark IDs that must run before this one
     pub depends_on: &'static [&'static str],

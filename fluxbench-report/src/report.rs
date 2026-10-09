@@ -98,16 +98,27 @@ pub struct ReportConfig {
     pub warmup_time_ns: u64,
     /// Measurement duration in nanoseconds
     pub measurement_time_ns: u64,
-    /// Minimum benchmark iterations (if specified)
+    /// Minimum total measurement iterations (if specified)
     pub min_iterations: Option<u64>,
-    /// Maximum benchmark iterations (if specified)
+    /// Maximum total measurement iterations (if specified)
     pub max_iterations: Option<u64>,
+    /// Target sample count. Reports without this field read as 100.
+    #[serde(default = "default_sample_count")]
+    pub sample_count: usize,
+    /// Fixed iterations per sample (`None` = time-based mode)
+    #[serde(default)]
+    pub iters_per_sample: Option<u64>,
     /// Bootstrap iterations for confidence intervals
     pub bootstrap_iterations: usize,
     /// Confidence level for intervals (e.g., 0.95 for 95%)
     pub confidence_level: f64,
     /// Whether memory allocations were tracked
     pub track_allocations: bool,
+}
+
+/// Sample count for reports written before `sample_count` existed
+fn default_sample_count() -> usize {
+    100
 }
 
 /// System information
@@ -305,4 +316,47 @@ pub struct ReportSummary {
     pub warnings: usize,
     /// Total execution duration in milliseconds
     pub total_duration_ms: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_config_reads_json_without_sample_fields() {
+        let json = r#"{
+            "warmup_time_ns": 3000000000,
+            "measurement_time_ns": 5000000000,
+            "min_iterations": null,
+            "max_iterations": null,
+            "bootstrap_iterations": 10000,
+            "confidence_level": 0.95,
+            "track_allocations": true
+        }"#;
+        let config: ReportConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.sample_count, 100);
+        assert_eq!(config.iters_per_sample, None);
+    }
+
+    #[test]
+    fn report_config_roundtrips_sample_fields() {
+        let json = r#"{
+            "warmup_time_ns": 0,
+            "measurement_time_ns": 5000000000,
+            "min_iterations": null,
+            "max_iterations": null,
+            "sample_count": 500,
+            "iters_per_sample": 1,
+            "bootstrap_iterations": 10000,
+            "confidence_level": 0.95,
+            "track_allocations": false
+        }"#;
+        let config: ReportConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.sample_count, 500);
+        assert_eq!(config.iters_per_sample, Some(1));
+        let back: ReportConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(back.sample_count, 500);
+        assert_eq!(back.iters_per_sample, Some(1));
+    }
 }

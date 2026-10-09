@@ -92,12 +92,6 @@ mod attr {
         Ok(())
     }
 
-    /// Skip/ignore an integer attribute
-    pub fn skip_int(meta: &ParseNestedMeta) -> syn::Result<()> {
-        let _: syn::LitInt = meta.value()?.parse()?;
-        Ok(())
-    }
-
     /// Parse a bracketed array of expressions: `args = [10, 100, 1000]`
     pub fn expr_array(meta: &ParseNestedMeta) -> syn::Result<Vec<syn::Expr>> {
         meta.value()?;
@@ -128,6 +122,10 @@ mod attr {
 ///     budget = "100ms"
 /// )]
 /// fn critical_benchmark(b: &mut Bencher) { ... }
+///
+/// // 250 samples of exactly 10 iterations each, no warmup
+/// #[flux::bench(sample_count = 250, iters_per_sample = 10)]
+/// fn fixed_benchmark(b: &mut Bencher) { ... }
 ///
 /// // Async with multi-threaded runtime
 /// #[flux::bench(runtime = "multi_thread", worker_threads = 4)]
@@ -184,6 +182,14 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
         .unwrap_or(quote! { None });
     let samples_expr = config
         .samples
+        .map(|v| quote! { Some(#v) })
+        .unwrap_or(quote! { None });
+    let sample_count_expr = config
+        .sample_count
+        .map(|v| quote! { Some(#v) })
+        .unwrap_or(quote! { None });
+    let iters_per_sample_expr = config
+        .iters_per_sample
         .map(|v| quote! { Some(#v) })
         .unwrap_or(quote! { None });
     let min_iterations_expr = config
@@ -246,6 +252,8 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
                         warmup_ns: #warmup_ns_expr,
                         measurement_ns: #measurement_ns_expr,
                         samples: #samples_expr,
+                        sample_count: #sample_count_expr,
+                        iters_per_sample: #iters_per_sample_expr,
                         min_iterations: #min_iterations_expr,
                         max_iterations: #max_iterations_expr,
                         depends_on: &[#(#depends_on_tokens),*],
@@ -297,6 +305,8 @@ fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Err
                 warmup_ns: #warmup_ns_expr,
                 measurement_ns: #measurement_ns_expr,
                 samples: #samples_expr,
+                sample_count: #sample_count_expr,
+                iters_per_sample: #iters_per_sample_expr,
                 min_iterations: #min_iterations_expr,
                 max_iterations: #max_iterations_expr,
                 depends_on: &[#(#depends_on_tokens),*],
@@ -354,6 +364,8 @@ struct BenchConfig {
     warmup_ns: Option<u64>,
     measurement_ns: Option<u64>,
     samples: Option<u64>,
+    sample_count: Option<u64>,
+    iters_per_sample: Option<u64>,
     min_iterations: Option<u64>,
     max_iterations: Option<u64>,
     /// Parameterized benchmark args: `args = [10, 100, 1000]`
@@ -386,10 +398,17 @@ fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
             "enable_time" => enable_time = attr::bool(&meta)?,
             "enable_io" => enable_io = attr::bool(&meta)?,
             "tags" => config.tags = attr::tags(&meta)?,
-            "iterations" => attr::skip_int(&meta)?,
+            "iterations" => {
+                return Err(syn::Error::new_spanned(
+                    &meta.path,
+                    "`iterations` is not supported. Use `iters_per_sample`.",
+                ));
+            }
             "warmup" => config.warmup_ns = parse_duration(&attr::string(&meta)?),
             "measurement" => config.measurement_ns = parse_duration(&attr::string(&meta)?),
             "samples" => config.samples = attr::int(&meta)?,
+            "sample_count" => config.sample_count = attr::int(&meta)?,
+            "iters_per_sample" => config.iters_per_sample = attr::int(&meta)?,
             "min_iterations" => config.min_iterations = attr::int(&meta)?,
             "max_iterations" => config.max_iterations = attr::int(&meta)?,
             "args" => config.args = attr::expr_array(&meta)?,
@@ -880,4 +899,28 @@ fn compare_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, s
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bench_config_parses_sample_count_and_iters_per_sample() {
+        let config = parse_bench_config(quote!(sample_count = 250, iters_per_sample = 10)).unwrap();
+        assert_eq!(config.sample_count, Some(250));
+        assert_eq!(config.iters_per_sample, Some(10));
+        assert_eq!(config.samples, None);
+    }
+
+    #[test]
+    fn bench_config_rejects_iterations() {
+        let err = parse_bench_config(quote!(iterations = 5))
+            .err()
+            .map(|e| e.to_string());
+        assert_eq!(
+            err.as_deref(),
+            Some("`iterations` is not supported. Use `iters_per_sample`.")
+        );
+    }
 }

@@ -332,8 +332,11 @@ cargo bench -- --tag expensive
 cargo bench -- --skip-tag network
 
 # Control execution
-cargo bench -- --warmup 10 --measurement 20    # Seconds
-cargo bench -- --min-iterations 100
+cargo bench -- --warmup 10 --measurement 20    # Bare numbers are seconds
+cargo bench -- --warmup 500ms --measurement 2s # Duration strings
+cargo bench -- --sample-count 250              # Target sample count (no cap)
+cargo bench -- --samples 500                   # Fixed mode: 500 one-iteration samples
+cargo bench -- --min-iterations 100            # Minimum total measurement iterations
 cargo bench -- --isolated=false                # In-process mode
 cargo bench -- --worker-timeout 120            # Worker timeout in seconds
 
@@ -368,9 +371,10 @@ timeout = "30s"              # Per-benchmark timeout (default: "60s")
 isolation = "process"        # "process", "in-process", or "thread" (default: "process")
 bootstrap_iterations = 1000  # Bootstrap resamples for CIs (default: 10000)
 confidence_level = 0.95      # Confidence level, 0.0–1.0 (default: 0.95)
-# samples = 5               # Fixed sample count — skips warmup, runs exactly N iterations
-# min_iterations = 100       # Minimum iterations per sample (default: auto-tuned)
-# max_iterations = 1000000   # Maximum iterations per sample (default: auto-tuned)
+# sample_count = 100         # Target sample count, minimum 2, no upper cap (default: 100)
+# samples = 5                # Fixed mode: N samples of one iteration each, no warmup
+# min_iterations = 100       # Minimum total measurement iterations (default: auto-tuned)
+# max_iterations = 1000000   # Maximum total measurement iterations (default: auto-tuned)
 # jobs = 4                   # Parallel isolated workers (default: sequential)
 ```
 

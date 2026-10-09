@@ -9,10 +9,10 @@ use crate::measure::Timer;
 use fluxbench_ipc::Sample;
 
 /// Default number of samples to collect (matches Criterion)
-pub const DEFAULT_SAMPLE_COUNT: usize = 100;
+pub const DEFAULT_SAMPLE_COUNT: usize = fluxbench_ipc::DEFAULT_SAMPLE_COUNT as usize;
 
-/// Minimum samples required for statistical validity
-pub const MIN_SAMPLE_COUNT: usize = 10;
+/// Minimum sample count. Two samples give a defined variance.
+pub const MIN_SAMPLE_COUNT: usize = 2;
 
 /// Mode of iteration for the benchmark
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +56,7 @@ pub struct Bencher {
     // === Configuration ===
     target_samples: usize,
     iters_per_sample: u64,
+    fixed_iters_per_sample: Option<u64>,
     track_allocations: bool,
 
     // === State ===
@@ -70,12 +71,14 @@ pub struct Bencher {
 impl Bencher {
     /// Create a new Bencher
     pub fn new(track_allocations: bool) -> Self {
-        Self::with_config(track_allocations, DEFAULT_SAMPLE_COUNT)
+        Self::with_sample_count(track_allocations, DEFAULT_SAMPLE_COUNT)
     }
 
-    /// Create a Bencher with custom sample count
-    pub fn with_config(track_allocations: bool, target_samples: usize) -> Self {
-        let target_samples = target_samples.max(MIN_SAMPLE_COUNT);
+    /// Create a Bencher that targets `sample_count` samples.
+    ///
+    /// The count has no upper cap. Values below `MIN_SAMPLE_COUNT` rise to it.
+    pub fn with_sample_count(track_allocations: bool, sample_count: usize) -> Self {
+        let target_samples = sample_count.max(MIN_SAMPLE_COUNT);
         Self {
             current_sample_time_ns: 0,
             current_sample_cycles: 0,
@@ -85,12 +88,43 @@ impl Bencher {
             samples: Vec::with_capacity(target_samples),
             target_samples,
             iters_per_sample: 1, // Will be set after warmup
+            fixed_iters_per_sample: None,
             track_allocations,
             total_iterations: 0,
             is_warmup: true,
             warmup_times: Vec::with_capacity(1000),
             cached_runtime: None,
         }
+    }
+
+    /// Create a Bencher from run config values.
+    ///
+    /// `Some(n)` iterations per sample selects fixed mode. `None` selects time-based mode.
+    pub fn for_config(
+        track_allocations: bool,
+        sample_count: usize,
+        iters_per_sample: Option<u64>,
+    ) -> Self {
+        let bencher = Self::with_sample_count(track_allocations, sample_count);
+        match iters_per_sample {
+            Some(iters) => bencher.with_fixed_iters_per_sample(iters),
+            None => bencher,
+        }
+    }
+
+    /// Fix the iterations per sample. This selects fixed mode: no warmup, no estimation.
+    ///
+    /// A value of 0 rises to 1.
+    pub fn with_fixed_iters_per_sample(mut self, iters: u64) -> Self {
+        let iters = iters.max(1);
+        self.fixed_iters_per_sample = Some(iters);
+        self.iters_per_sample = iters;
+        self
+    }
+
+    /// Fixed iterations per sample, if fixed mode is on
+    pub fn fixed_iters_per_sample(&self) -> Option<u64> {
+        self.fixed_iters_per_sample
     }
 
     /// Set iterations per sample (called after warmup estimation)
@@ -112,7 +146,9 @@ impl Bencher {
         self.is_warmup = false;
 
         // Calculate iterations per sample based on warmup estimate
-        if let Some(iter_time) = self.estimated_iter_time_ns() {
+        if let Some(iters) = self.fixed_iters_per_sample {
+            self.iters_per_sample = iters;
+        } else if let Some(iter_time) = self.estimated_iter_time_ns() {
             let time_per_sample = measurement_time_ns / self.target_samples as u64;
             self.iters_per_sample = (time_per_sample / iter_time).max(1);
         } else {
@@ -372,18 +408,15 @@ impl Bencher {
         }
 
         let n = self.current_sample_iters;
+        let n_f64 = n as f64;
 
-        // Average values for this sample
-        let avg_time_ns = self.current_sample_time_ns / n;
-        let avg_cycles = self.current_sample_cycles / n;
-        let avg_alloc_bytes = self.current_sample_alloc_bytes / n;
-        let avg_alloc_count = (self.current_sample_alloc_count / n) as u32;
-
+        // Per-iteration means for this sample
         self.samples.push(Sample::new(
-            avg_time_ns,
-            avg_alloc_bytes,
-            avg_alloc_count,
-            avg_cycles,
+            self.current_sample_time_ns as f64 / n_f64,
+            self.current_sample_cycles as f64 / n_f64,
+            self.current_sample_alloc_bytes as f64 / n_f64,
+            self.current_sample_alloc_count as f64 / n_f64,
+            n,
         ));
 
         // Reset for next sample
@@ -425,7 +458,12 @@ impl Bencher {
         // Flush any remaining accumulated iterations
         self.flush_sample();
 
-        let total_time_ns: u64 = self.samples.iter().map(|s| s.duration_nanos).sum();
+        let total_time_ns = self
+            .samples
+            .iter()
+            .map(|s| s.duration_nanos * s.iterations as f64)
+            .sum::<f64>()
+            .round() as u64;
 
         BenchmarkResult {
             samples: self.samples,
@@ -445,8 +483,12 @@ impl Bencher {
 /// * `runner_fn` - Function that calls the benchmark under test
 /// * `warmup_time_ns` - How long to run warmup phase (nanoseconds)
 /// * `measurement_time_ns` - How long to run measurement phase (nanoseconds)
-/// * `min_iterations` - Optional minimum measurement iterations before completion
-/// * `max_iterations` - Optional cap on measurement iterations
+/// * `min_iterations` - Optional minimum total measurement iterations before completion
+/// * `max_iterations` - Optional cap on total measurement iterations
+///
+/// In fixed mode (`Bencher::with_fixed_iters_per_sample`) the loop skips warmup.
+/// It then runs exactly `sample_count * iters_per_sample` iterations.
+/// The iteration and time arguments are ignored in this mode.
 pub fn run_benchmark_loop<F>(
     mut bencher: Bencher,
     mut runner_fn: F,
@@ -459,6 +501,15 @@ where
     F: FnMut(&mut Bencher),
 {
     use crate::Instant;
+
+    // Fixed mode: no warmup, and exactly sample_count * iters_per_sample iterations
+    let (warmup_time_ns, min_iterations, max_iterations) = match bencher.fixed_iters_per_sample() {
+        Some(iters) => {
+            let total = (bencher.target_samples() as u64).saturating_mul(iters);
+            (0, Some(total), Some(total))
+        }
+        None => (warmup_time_ns, min_iterations, max_iterations),
+    };
 
     // Warmup phase - Bencher starts in warmup mode
     // This collects timing data to estimate iterations per sample
@@ -577,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_sample_batching() {
-        let mut bencher = Bencher::with_config(false, 10); // 10 target samples
+        let mut bencher = Bencher::with_sample_count(false, 10); // 10 target samples
 
         // Skip warmup, go directly to measurement
         bencher.is_warmup = false;
@@ -595,7 +646,7 @@ mod tests {
 
     #[test]
     fn test_run_loop_respects_min_iterations() {
-        let bencher = Bencher::with_config(false, 10);
+        let bencher = Bencher::with_sample_count(false, 10);
         let result = run_benchmark_loop(bencher, |b| b.iter(|| 42_u64), 0, 0, Some(100), Some(100));
 
         assert_eq!(result.iterations, 100);
@@ -603,9 +654,76 @@ mod tests {
 
     #[test]
     fn test_run_loop_clamps_min_to_max() {
-        let bencher = Bencher::with_config(false, 10);
+        let bencher = Bencher::with_sample_count(false, 10);
         let result = run_benchmark_loop(bencher, |b| b.iter(|| 7_u64), 0, 0, Some(200), Some(50));
 
         assert_eq!(result.iterations, 200);
+    }
+
+    #[test]
+    fn test_sample_count_above_100_is_honoured() {
+        let bencher = Bencher::with_sample_count(false, 250);
+        assert_eq!(bencher.target_samples(), 250);
+
+        // min = max = 250 with 1 iteration per sample (no warmup estimate)
+        let result = run_benchmark_loop(bencher, |b| b.iter(|| 1_u64), 0, 1, Some(250), Some(250));
+
+        assert_eq!(result.samples.len(), 250);
+        assert!(result.samples.iter().all(|s| s.iterations == 1));
+    }
+
+    #[test]
+    fn test_sample_count_floor_is_two() {
+        assert_eq!(Bencher::with_sample_count(false, 0).target_samples(), 2);
+        assert_eq!(Bencher::with_sample_count(false, 1).target_samples(), 2);
+        assert_eq!(Bencher::with_sample_count(false, 2).target_samples(), 2);
+    }
+
+    #[test]
+    fn test_fixed_mode_500_samples_of_one_iteration() {
+        let bencher = Bencher::with_sample_count(false, 500).with_fixed_iters_per_sample(1);
+        // Time and iteration arguments are ignored in fixed mode
+        let result = run_benchmark_loop(
+            bencher,
+            |b| b.iter(|| 3_u64),
+            1_000_000_000,
+            1,
+            Some(7),
+            Some(7),
+        );
+
+        assert_eq!(result.samples.len(), 500);
+        assert_eq!(result.iterations, 500);
+        assert!(result.samples.iter().all(|s| s.iterations == 1));
+    }
+
+    #[test]
+    fn test_fixed_mode_groups_iterations_per_sample() {
+        let bencher = Bencher::with_sample_count(false, 10).with_fixed_iters_per_sample(3);
+        let result = run_benchmark_loop(bencher, |b| b.iter(|| 5_u64), 0, 1, None, None);
+
+        assert_eq!(result.samples.len(), 10);
+        assert_eq!(result.iterations, 30);
+        assert!(result.samples.iter().all(|s| s.iterations == 3));
+    }
+
+    #[test]
+    fn test_flushed_sample_holds_means() {
+        let mut bencher = Bencher::with_sample_count(false, 2);
+        bencher.is_warmup = false;
+        bencher.iters_per_sample = 4;
+        for (time, cycles) in [(10, 30), (20, 60), (30, 90), (41, 121)] {
+            bencher.accumulate_sample(time, cycles, 8, 1);
+        }
+
+        let result = bencher.finish();
+        assert_eq!(result.samples.len(), 1);
+        let sample = result.samples[0];
+        assert_eq!(sample.duration_nanos, 25.25);
+        assert_eq!(sample.cpu_cycles, 75.25);
+        assert_eq!(sample.alloc_bytes, 8.0);
+        assert_eq!(sample.alloc_count, 1.0);
+        assert_eq!(sample.iterations, 4);
+        assert_eq!(result.total_time_ns, 101);
     }
 }

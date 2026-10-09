@@ -56,6 +56,8 @@ pub fn build_report_meta(exec_config: &ExecutionConfig) -> ReportMeta {
             measurement_time_ns: exec_config.measurement_time_ns,
             min_iterations: exec_config.min_iterations,
             max_iterations: exec_config.max_iterations,
+            sample_count: exec_config.sample_count,
+            iters_per_sample: exec_config.iters_per_sample,
             bootstrap_iterations: exec_config.bootstrap_iterations,
             confidence_level: exec_config.confidence_level,
             track_allocations: exec_config.track_allocations,

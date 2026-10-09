@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn test_push_single() {
         let mut buffer = SampleRingBuffer::new("test");
-        let sample = Sample::timing_only(1000);
+        let sample = Sample::timing_only(1000.0);
 
         let result = buffer.push(sample);
         assert!(result.is_none()); // No flush yet
@@ -182,21 +182,20 @@ mod tests {
     fn test_flush_on_byte_limit() {
         let mut buffer = SampleRingBuffer::new("test");
 
-        // Calculate how many samples fit below MAX_BATCH_BYTES.
         // Flush triggers when estimated_bytes() >= MAX_BATCH_BYTES.
-        // With 32-byte Sample: 65536 / 32 = 2048 exactly, so the 2048th
-        // sample hits the limit. Push one fewer without flush.
-        let samples_before_flush = MAX_BATCH_BYTES / std::mem::size_of::<Sample>();
+        // With 40-byte Sample: ceil(65536 / 40) = 1639, so the 1639th sample
+        // hits the limit. Push one fewer without flush.
+        let samples_before_flush = MAX_BATCH_BYTES.div_ceil(std::mem::size_of::<Sample>());
 
         // Push samples until just before byte limit
         for i in 0..(samples_before_flush - 1) {
-            let sample = Sample::timing_only(i as u64);
+            let sample = Sample::timing_only(i as f64);
             let result = buffer.push(sample);
             assert!(result.is_none(), "unexpected flush at sample {}", i);
         }
 
         // This push should trigger flush due to byte limit
-        let sample = Sample::timing_only(9999);
+        let sample = Sample::timing_only(9999.0);
         let batch = buffer.push(sample);
         assert!(batch.is_some());
 
@@ -214,9 +213,9 @@ mod tests {
     fn test_flush_final() {
         let mut buffer = SampleRingBuffer::new("test");
 
-        buffer.push(Sample::timing_only(100));
-        buffer.push(Sample::timing_only(200));
-        buffer.push(Sample::timing_only(300));
+        buffer.push(Sample::timing_only(100.0));
+        buffer.push(Sample::timing_only(200.0));
+        buffer.push(Sample::timing_only(300.0));
 
         let batch = buffer.flush_final();
         assert!(batch.is_some());

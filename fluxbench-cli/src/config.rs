@@ -61,13 +61,16 @@ pub struct RunnerConfig {
     /// Measurement duration (e.g., "5s")
     #[serde(default = "default_measurement")]
     pub measurement_time: String,
-    /// Fixed sample count: skip warmup, run exactly N iterations (each = one sample)
+    /// Fixed mode: N samples of one iteration each, no warmup
     #[serde(default)]
     pub samples: Option<u64>,
-    /// Minimum number of iterations
+    /// Target sample count (minimum 2, no upper cap)
+    #[serde(default)]
+    pub sample_count: Option<usize>,
+    /// Minimum total measurement iterations
     #[serde(default)]
     pub min_iterations: Option<u64>,
-    /// Maximum number of iterations
+    /// Maximum total measurement iterations
     #[serde(default)]
     pub max_iterations: Option<u64>,
     /// Number of bootstrap iterations for statistics
@@ -89,6 +92,7 @@ impl Default for RunnerConfig {
             warmup_time: default_warmup(),
             measurement_time: default_measurement(),
             samples: None,
+            sample_count: None,
             min_iterations: None,
             max_iterations: None,
             bootstrap_iterations: default_bootstrap_iterations(),
@@ -279,11 +283,13 @@ measurement_time = "5s"
 timeout = "60s"
 # Isolation mode: "process" or "thread"
 isolation = "process"  # "process", "in-process", or "thread"
-# Fixed sample count: skip warmup, run exactly N iterations (uncomment to enable)
+# Target sample count, minimum 2, no upper cap (uncomment to enable)
+# sample_count = 100
+# Fixed mode: N samples of one iteration each, no warmup (uncomment to enable)
 # samples = 5
-# Minimum iterations (uncomment to enable)
+# Minimum total measurement iterations (uncomment to enable)
 # min_iterations = 100
-# Maximum iterations (uncomment to enable)
+# Maximum total measurement iterations (uncomment to enable)
 # max_iterations = 1000000
 # Number of parallel isolated workers (uncomment to enable)
 # jobs = 4
@@ -359,6 +365,14 @@ fail_on_critical = true
     }
 }
 
+/// Parse a CLI duration such as `5s` or `500ms` into nanoseconds.
+///
+/// A bare number means seconds.
+pub(crate) fn parse_duration_arg(s: &str) -> Result<u64, String> {
+    FluxConfig::parse_duration(s)
+        .map_err(|e| format!("invalid duration `{s}`: {e}. Use a value such as `5s` or `500ms`."))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,5 +420,24 @@ mod tests {
         let default_toml = FluxConfig::default_toml();
         let config: FluxConfig = toml::from_str(&default_toml).unwrap();
         assert_eq!(config.runner.warmup_time, "3s");
+        assert_eq!(config.runner.sample_count, None);
+    }
+
+    #[test]
+    fn test_parse_toml_sample_count() {
+        let toml_str = r#"
+            [runner]
+            sample_count = 250
+        "#;
+        let config: FluxConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.runner.sample_count, Some(250));
+        assert_eq!(config.runner.samples, None);
+    }
+
+    #[test]
+    fn test_parse_duration_arg() {
+        assert_eq!(parse_duration_arg("3"), Ok(3_000_000_000));
+        assert_eq!(parse_duration_arg("500ms"), Ok(500_000_000));
+        assert!(parse_duration_arg("fast").is_err());
     }
 }

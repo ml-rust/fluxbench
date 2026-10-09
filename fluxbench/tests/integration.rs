@@ -44,7 +44,8 @@ fn test_bencher_collects_samples() {
 
     // All samples should have non-zero duration
     for sample in samples {
-        assert!(sample.duration_nanos > 0);
+        assert!(sample.duration_nanos > 0.0);
+        assert_eq!(sample.iterations, 1);
     }
 }
 
@@ -133,7 +134,7 @@ fn test_ab_comparison() {
 /// Test cycles statistics
 #[test]
 fn test_cycles_statistics() {
-    let cycles: Vec<u64> = vec![3000, 3100, 2900, 3050, 2950];
+    let cycles: Vec<f64> = vec![3000.0, 3100.0, 2900.0, 3050.0, 2950.0];
     let nanos: Vec<f64> = vec![1000.0, 1033.0, 967.0, 1017.0, 983.0];
 
     let stats = compute_cycles_stats(&cycles, &nanos);

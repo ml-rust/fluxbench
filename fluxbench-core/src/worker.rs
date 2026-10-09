@@ -169,7 +169,11 @@ impl WorkerMain {
 
         // Run with panic catching
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let bencher = Bencher::new(config.track_allocations);
+            let bencher = Bencher::for_config(
+                config.track_allocations,
+                config.sample_count as usize,
+                config.iters_per_sample,
+            );
 
             run_benchmark_loop(
                 bencher,
