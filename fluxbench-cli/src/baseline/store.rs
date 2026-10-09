@@ -9,33 +9,22 @@ use fluxbench_report::{REPORT_SCHEMA_VERSION, Report, generate_json_report};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Baseline path when neither the CLI nor flux.toml names one
-pub(crate) const DEFAULT_BASELINE_PATH: &str = "target/fluxbench/baseline.json";
-
 /// Resolve the baseline path from the CLI flag, then flux.toml, then the default.
 ///
 /// - `Some(Some(path))`: explicit path from `--baseline /path/to/file`
-/// - `Some(None)`: `--baseline` with no value. flux.toml `baseline_path` or the default applies.
+/// - `Some(None)`: `--baseline` with no value. flux.toml `baseline_path` or `baseline.json` applies.
 /// - `None`: flag not passed
+///
+/// A bare file name goes under `output.directory`, else under `target/fluxbench`.
 pub(crate) fn resolve_baseline_path(
     cli_baseline: &Option<Option<PathBuf>>,
     config: &FluxConfig,
 ) -> Option<PathBuf> {
     match cli_baseline {
-        Some(Some(path)) => Some(path.clone()),
-        Some(None) => Some(configured_or_default(config)),
+        Some(Some(path)) => Some(config.output.resolve_baseline(path)),
+        Some(None) => Some(config.output.baseline_file()),
         None => None,
     }
-}
-
-/// flux.toml `output.baseline_path`, else [`DEFAULT_BASELINE_PATH`]
-pub(crate) fn configured_or_default(config: &FluxConfig) -> PathBuf {
-    config
-        .output
-        .baseline_path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_BASELINE_PATH))
 }
 
 /// Read and parse a baseline report.
@@ -85,11 +74,10 @@ pub(crate) fn save_baseline_if_needed(
         return Ok(());
     }
 
-    let path = cli
-        .save_baseline
-        .clone()
-        .flatten()
-        .unwrap_or_else(|| configured_or_default(config));
+    let path = match cli.save_baseline.clone().flatten() {
+        Some(path) => config.output.resolve_baseline(&path),
+        None => config.output.baseline_file(),
+    };
 
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -193,18 +181,23 @@ mod tests {
         assert_eq!(resolve_baseline_path(&None, &config), None);
         assert_eq!(
             resolve_baseline_path(&Some(None), &config),
-            Some(PathBuf::from(DEFAULT_BASELINE_PATH))
+            Some(PathBuf::from("target/fluxbench/baseline.json"))
         );
         assert_eq!(
             resolve_baseline_path(&Some(Some(PathBuf::from("x.json"))), &config),
-            Some(PathBuf::from("x.json"))
+            Some(PathBuf::from("target/fluxbench/x.json"))
+        );
+        assert_eq!(
+            resolve_baseline_path(&Some(Some(PathBuf::from("./x.json"))), &config),
+            Some(PathBuf::from("./x.json"))
         );
 
         let mut configured = FluxConfig::default();
         configured.output.baseline_path = Some("main.json".to_string());
+        configured.output.directory = Some("ci".to_string());
         assert_eq!(
             resolve_baseline_path(&Some(None), &configured),
-            Some(PathBuf::from("main.json"))
+            Some(PathBuf::from("ci/main.json"))
         );
     }
 }

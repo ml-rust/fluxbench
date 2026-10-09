@@ -4,13 +4,14 @@
 //!
 //! Filtering options:
 //! - Regex pattern matching on benchmark ID
-//! - Group filtering
-//! - Tag inclusion/exclusion
+//! - Group filtering. A group also selects its `#[flux::group]` child groups.
+//! - Tag inclusion/exclusion. Tags include those inherited from `#[flux::group]`.
 //!
 //! Ordering:
 //! 1. Dependency-based topological sort (benchmarks with `depends_on` run after their deps)
 //! 2. Alphabetical by ID within the same dependency level
 
+use crate::groups::GroupTree;
 use fluxbench_core::BenchmarkDef;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -20,36 +21,44 @@ pub struct ExecutionPlan {
     pub benchmarks: Vec<&'static BenchmarkDef>,
 }
 
+/// CLI selection filters
+#[derive(Default)]
+pub(crate) struct Filters<'f> {
+    pub regex: Option<&'f regex::Regex>,
+    pub group: Option<&'f str>,
+    pub tag: Option<&'f str>,
+    pub skip_tag: Option<&'f str>,
+}
+
 /// Build execution plan from discovered benchmarks
 ///
 /// Filters benchmarks based on CLI options and returns them in dependency-respecting order.
-pub fn build_plan(
+pub(crate) fn build_plan(
     benchmarks: impl IntoIterator<Item = &'static BenchmarkDef>,
-    filter: Option<&regex::Regex>,
-    group: Option<&str>,
-    tag: Option<&str>,
-    skip_tag: Option<&str>,
+    filters: &Filters,
+    groups: &GroupTree,
 ) -> ExecutionPlan {
     let mut selected: Vec<_> = benchmarks
         .into_iter()
         .filter(|b| {
-            if let Some(re) = filter {
+            if let Some(re) = filters.regex {
                 if !re.is_match(b.id) {
                     return false;
                 }
             }
-            if let Some(g) = group {
-                if b.group != g {
+            if let Some(g) = filters.group {
+                if !groups.in_group(b.group, g) {
                     return false;
                 }
             }
-            if let Some(t) = tag {
-                if !b.tags.contains(&t) {
+            let tags = groups.tags_of(b);
+            if let Some(t) = filters.tag {
+                if !tags.contains(t) {
                     return false;
                 }
             }
-            if let Some(st) = skip_tag {
-                if b.tags.contains(&st) {
+            if let Some(st) = filters.skip_tag {
+                if tags.contains(st) {
                     return false;
                 }
             }
@@ -192,7 +201,7 @@ mod tests {
             .map(|b| unsafe { &*(b as *const _) })
             .collect();
 
-        let plan = build_plan(refs, None, None, None, None);
+        let plan = build_plan(refs, &Filters::default(), &GroupTree::default());
 
         // Should be sorted alphabetically
         assert_eq!(plan.benchmarks.len(), 3);
@@ -213,7 +222,11 @@ mod tests {
             .map(|b| unsafe { &*(b as *const _) })
             .collect();
 
-        let plan = build_plan(refs, None, Some("group_a"), None, None);
+        let filters = Filters {
+            group: Some("group_a"),
+            ..Default::default()
+        };
+        let plan = build_plan(refs, &filters, &GroupTree::default());
 
         assert_eq!(plan.benchmarks.len(), 2);
         assert!(plan.benchmarks.iter().all(|b| b.group == "group_a"));
@@ -231,7 +244,11 @@ mod tests {
             .map(|b| unsafe { &*(b as *const _) })
             .collect();
 
-        let plan = build_plan(refs, None, None, Some("fast"), None);
+        let filters = Filters {
+            tag: Some("fast"),
+            ..Default::default()
+        };
+        let plan = build_plan(refs, &filters, &GroupTree::default());
 
         assert_eq!(plan.benchmarks.len(), 2);
         assert!(plan.benchmarks.iter().all(|b| b.tags.contains(&"fast")));
@@ -249,7 +266,7 @@ mod tests {
             .map(|b| unsafe { &*(b as *const _) })
             .collect();
 
-        let plan = build_plan(refs, None, None, None, None);
+        let plan = build_plan(refs, &Filters::default(), &GroupTree::default());
 
         assert_eq!(plan.benchmarks.len(), 3);
         // a_bench must come first (no deps)
@@ -272,7 +289,7 @@ mod tests {
             .map(|b| unsafe { &*(b as *const _) })
             .collect();
 
-        let plan = build_plan(refs, None, None, None, None);
+        let plan = build_plan(refs, &Filters::default(), &GroupTree::default());
 
         assert_eq!(plan.benchmarks.len(), 3);
         assert_eq!(plan.benchmarks[0].id, "a_bench");
@@ -293,7 +310,7 @@ mod tests {
             .collect();
 
         // Cycle: a -> c -> b -> a; should fall back to alphabetical
-        let plan = build_plan(refs, None, None, None, None);
+        let plan = build_plan(refs, &Filters::default(), &GroupTree::default());
         assert_eq!(plan.benchmarks.len(), 3);
         assert_eq!(plan.benchmarks[0].id, "a_bench");
         assert_eq!(plan.benchmarks[1].id, "b_bench");
@@ -312,9 +329,59 @@ mod tests {
             .map(|b| unsafe { &*(b as *const _) })
             .collect();
 
-        let plan = build_plan(refs, None, None, None, Some("skip_ci"));
+        let filters = Filters {
+            skip_tag: Some("skip_ci"),
+            ..Default::default()
+        };
+        let plan = build_plan(refs, &filters, &GroupTree::default());
 
         assert_eq!(plan.benchmarks.len(), 2);
         assert!(plan.benchmarks.iter().all(|b| !b.tags.contains(&"skip_ci")));
+    }
+
+    #[test]
+    fn group_filter_and_tags_follow_group_definitions() {
+        use fluxbench_core::GroupDef;
+        use std::collections::BTreeSet;
+
+        static DEFS: [GroupDef; 2] = [
+            GroupDef {
+                id: "parsing",
+                description: "",
+                tags: &["hot"],
+                parent: None,
+            },
+            GroupDef {
+                id: "json",
+                description: "",
+                tags: &[],
+                parent: Some("parsing"),
+            },
+        ];
+        let tree = GroupTree::new(&DEFS, &BTreeSet::new()).unwrap();
+        let benches = [
+            make_bench("child", "json", &[]),
+            make_bench("other", "misc", &[]),
+        ];
+        let refs: Vec<_> = benches
+            .iter()
+            .map(|b| unsafe { &*(b as *const _) })
+            .collect();
+
+        let by_group = Filters {
+            group: Some("parsing"),
+            ..Default::default()
+        };
+        let plan = build_plan(refs.clone(), &by_group, &tree);
+        assert_eq!(plan.benchmarks.len(), 1);
+        assert_eq!(plan.benchmarks[0].id, "child");
+
+        let by_tag = Filters {
+            tag: Some("hot"),
+            ..Default::default()
+        };
+        let plan = build_plan(refs, &by_tag, &tree);
+        assert_eq!(plan.benchmarks.len(), 1);
+        assert_eq!(plan.benchmarks[0].id, "child");
     }
 }

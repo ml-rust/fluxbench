@@ -56,7 +56,7 @@ pub(super) fn exit_message(cause: &str, partial: usize) -> String {
 /// Message for a benchmark that exceeded the worker timeout.
 pub(super) fn timeout_message(timeout: Duration, partial: usize) -> String {
     format!(
-        "benchmark exceeded the {}s worker timeout; {partial} partial samples received and not used for statistics. Raise --worker-timeout or shorten the benchmark.",
+        "benchmark exceeded the {}s worker timeout; {partial} partial samples received and not used for statistics. Raise --worker-timeout or flux.toml runner.timeout, or shorten the benchmark.",
         timeout.as_secs_f64()
     )
 }

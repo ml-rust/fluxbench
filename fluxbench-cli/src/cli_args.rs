@@ -1,6 +1,6 @@
 //! Command-line arguments.
 
-use crate::config;
+use crate::{ReportFormat, config};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -13,20 +13,25 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Filter benchmarks by regex pattern
+    /// Filter benchmarks by regex on the benchmark ID. An invalid regex is an error.
     #[arg(default_value = ".*")]
     pub filter: String,
 
-    /// Output format: json, github-summary, github-action, csv, html, human
-    #[arg(long, default_value = "human")]
-    pub format: String,
+    /// Report format [default: flux.toml output.format, else human]
+    #[arg(long, value_enum)]
+    pub format: Option<ReportFormat>,
 
-    /// Output file (stdout if not specified)
+    /// Report file (stdout if not specified)
+    ///
+    /// A bare file name goes under flux.toml output.directory when that key is set.
+    /// Otherwise the path stays as written.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
     /// Load baseline for comparison
-    /// Optionally specify a path; defaults to config or target/fluxbench/baseline.json
+    ///
+    /// Without a path: flux.toml output.baseline_path, else baseline.json.
+    /// A bare file name goes under flux.toml output.directory, else target/fluxbench.
     #[arg(long)]
     pub baseline: Option<Option<PathBuf>>,
 
@@ -41,15 +46,15 @@ pub struct Cli {
     #[arg(long)]
     pub threshold: Option<f64>,
 
-    /// Run benchmarks for this group only
+    /// Run benchmarks of this group and its #[flux::group] child groups. An unknown group is an error.
     #[arg(long)]
     pub group: Option<String>,
 
-    /// Filter by tag
+    /// Run benchmarks with this tag, from #[bench] or #[flux::group]. An unknown tag is an error.
     #[arg(long)]
     pub tag: Option<String>,
 
-    /// Skip benchmarks with this tag
+    /// Skip benchmarks with this tag, from #[bench] or #[flux::group]. An unknown tag is an error.
     #[arg(long)]
     pub skip_tag: Option<String>,
 
@@ -86,19 +91,23 @@ pub struct Cli {
     #[arg(short, long)]
     pub verbose: bool,
 
-    /// Run benchmarks in isolated worker processes (default: true)
-    /// Use --isolated=false to disable and run in-process
-    #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
-    pub isolated: bool,
+    /// Run benchmarks in isolated worker processes [default: flux.toml runner.isolation, else true]
+    ///
+    /// Use --isolated=false to run in-process.
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub isolated: Option<bool>,
 
     /// Use fresh worker process for each benchmark (One-Shot mode)
     /// Default is Persistent mode: reuse worker for safe Rust code
     #[arg(long)]
     pub one_shot: bool,
 
-    /// Worker timeout in seconds
-    #[arg(long, default_value = "60")]
-    pub worker_timeout: u64,
+    /// Worker timeout per benchmark, e.g. `120` or `2m`. A bare number means seconds.
+    /// [default: flux.toml runner.timeout, else 60s]
+    ///
+    /// Held in nanoseconds. A value below warmup + measurement + 2s rises to that, with a warning.
+    #[arg(long, value_parser = config::parse_duration_arg)]
+    pub worker_timeout: Option<u64>,
 
     /// Number of parallel isolated workers [default: 1]
     ///
@@ -128,7 +137,9 @@ pub struct Cli {
     pub flux_worker: bool,
 
     /// Save benchmark results as baseline JSON, raw samples included
-    /// Optionally specify a path; defaults to config or target/fluxbench/baseline.json
+    ///
+    /// Without a path: flux.toml output.baseline_path, else baseline.json.
+    /// A bare file name goes under flux.toml output.directory, else target/fluxbench.
     #[arg(long)]
     pub save_baseline: Option<Option<PathBuf>>,
 
@@ -146,7 +157,7 @@ pub enum Commands {
     Run,
     /// Compare against the baseline saved at a git ref
     ///
-    /// The baseline comes from --baseline, flux.toml, or target/fluxbench/baseline.json.
+    /// The baseline comes from --baseline, flux.toml output.baseline_path, or baseline.json under output.directory (default target/fluxbench).
     Compare {
         /// Git ref to compare against (e.g., origin/main)
         #[arg(name = "REF")]

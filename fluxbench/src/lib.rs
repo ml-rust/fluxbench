@@ -57,7 +57,7 @@ pub use fluxbench_core::{
 };
 
 // Re-export macros
-pub use fluxbench_macros::{bench, compare, group, report, synthetic, verify};
+pub use fluxbench_macros::{bench, chart, compare, group, report, synthetic, verify};
 
 // Re-export logic types
 pub use fluxbench_logic::{
@@ -80,14 +80,14 @@ pub mod internal {
 /// Prelude for convenient imports
 pub mod prelude {
     pub use crate::{
-        Bencher, CompareDef, GroupDef, ReportDef, Severity, bench, compare, group, report,
-        synthetic, verify,
+        Bencher, ChartDef, ChartType, CompareDef, GroupDef, ReportDef, Severity, bench, chart,
+        compare, group, report, synthetic, verify,
     };
 }
 
 /// Attribute namespace for flux macros
 pub mod flux {
-    pub use fluxbench_macros::{bench, compare, group, report, synthetic, verify};
+    pub use fluxbench_macros::{bench, chart, compare, group, report, synthetic, verify};
 }
 
 /// Run the FluxBench CLI harness.

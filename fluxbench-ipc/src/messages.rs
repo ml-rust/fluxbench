@@ -178,7 +178,8 @@ pub enum WorkerMessage {
 ///
 /// `as_str` gives the report string for each kind.
 /// The worker sends `Panic` and `Unknown`.
-/// The supervisor sets `Timeout`, `Signal` and `Crashed` from what it sees.
+/// The supervisor sets `Timeout`, `Signal` and `Crashed` from what it sees,
+/// and `AllocationLimit` from the measured allocations.
 #[derive(Debug, Clone, PartialEq, Eq, Archive, RkyvSerialize, RkyvDeserialize)]
 pub enum FailureKind {
     /// Rust panic (caught). Report string: `panic`.
@@ -187,7 +188,8 @@ pub enum FailureKind {
     Timeout,
     /// Assertion failure in verification. Report string: `assertion`.
     Assertion,
-    /// Allocation limit exceeded. Report string: `allocation_limit`.
+    /// The benchmark broke `allocator.fail_on_allocation` or `allocator.max_bytes_per_iter`.
+    /// The supervisor sets it after measurement. Report string: `allocation_limit`.
     AllocationLimit,
     /// A signal killed the worker. Holds the name, e.g. `SIGSEGV` or `signal 40`.
     /// Report string: `signal`.
@@ -272,8 +274,6 @@ pub struct BenchmarkConfig {
     pub iters_per_sample: Option<u64>,
     /// Whether to track allocations
     pub track_allocations: bool,
-    /// Whether to fail on any allocation (for hot path testing)
-    pub fail_on_allocation: bool,
     /// Timeout in nanoseconds (0 = no timeout)
     pub timeout_ns: u64,
 }
@@ -288,7 +288,6 @@ impl Default for BenchmarkConfig {
             sample_count: DEFAULT_SAMPLE_COUNT,
             iters_per_sample: None,
             track_allocations: true,
-            fail_on_allocation: false,
             timeout_ns: 60_000_000_000, // 60 seconds
         }
     }

@@ -7,114 +7,21 @@
 //! - `#[flux::bench]` - Register a benchmark function
 //! - `#[flux::verify]` - Define a performance assertion
 //! - `#[flux::synthetic]` - Define a computed metric
-//! - `#[flux::group]` - Group related benchmarks with metadata
-//! - `#[flux::report]` - Define a dashboard layout
+//! - `#[flux::compare]` - Define a comparison table or series
+//! - `#[flux::group]` - Describe a benchmark group
+//! - `#[flux::report]` - Set the HTML report title, description, and chart grid
+//! - `#[flux::chart]` - Add an SVG chart to the HTML report
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
 use syn::{ItemFn, ItemStruct, parse_macro_input};
 
-// ============================================================================
-// Attribute Parsing Helpers
-// ============================================================================
-//
-// Common utilities for parsing macro attributes, eliminating duplication
-// across the 6 procedural macros.
-
-mod attr {
-    use syn::meta::ParseNestedMeta;
-
-    /// Get the attribute name as a string
-    pub fn name(meta: &ParseNestedMeta) -> String {
-        meta.path
-            .get_ident()
-            .map(|i| i.to_string())
-            .unwrap_or_default()
-    }
-
-    /// Parse a string literal attribute: `attr = "value"`
-    pub fn string(meta: &ParseNestedMeta) -> syn::Result<String> {
-        let value: syn::LitStr = meta.value()?.parse()?;
-        Ok(value.value())
-    }
-
-    /// Parse a float literal attribute: `attr = 1.5`
-    pub fn float(meta: &ParseNestedMeta) -> syn::Result<f64> {
-        let value: syn::LitFloat = meta.value()?.parse()?;
-        value.base10_parse()
-    }
-
-    /// Parse an integer literal attribute: `attr = 42`
-    pub fn int<T>(meta: &ParseNestedMeta) -> syn::Result<Option<T>>
-    where
-        T: std::str::FromStr,
-        T::Err: std::fmt::Display,
-    {
-        let value: syn::LitInt = meta.value()?.parse()?;
-        Ok(Some(value.base10_parse()?))
-    }
-
-    /// Parse `worker_threads = N`. N must be at least 1.
-    pub fn worker_threads(meta: &ParseNestedMeta) -> syn::Result<usize> {
-        let value: syn::LitInt = meta.value()?.parse()?;
-        let threads: usize = value.base10_parse()?;
-        if threads == 0 {
-            return Err(syn::Error::new_spanned(
-                &value,
-                "`worker_threads` must be at least 1",
-            ));
-        }
-        Ok(threads)
-    }
-
-    /// Parse a boolean literal attribute: `attr = true`
-    pub fn bool(meta: &ParseNestedMeta) -> syn::Result<bool> {
-        let value: syn::LitBool = meta.value()?.parse()?;
-        Ok(value.value())
-    }
-
-    /// Parse a comma-separated string as tags: `tags = "a, b, c"`
-    pub fn tags(meta: &ParseNestedMeta) -> syn::Result<Vec<String>> {
-        let value: syn::LitStr = meta.value()?.parse()?;
-        Ok(value
-            .value()
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .collect())
-    }
-
-    /// Parse a bracketed array of strings: `items = ["a", "b", "c"]`
-    pub fn string_array(meta: &ParseNestedMeta) -> syn::Result<Vec<String>> {
-        meta.value()?;
-        let content;
-        syn::bracketed!(content in meta.input);
-        let items: syn::punctuated::Punctuated<syn::LitStr, syn::Token![,]> =
-            syn::punctuated::Punctuated::parse_terminated(&content)?;
-        Ok(items.iter().map(|s| s.value()).collect())
-    }
-
-    /// Create an unknown attribute error
-    pub fn unknown(meta: &ParseNestedMeta, name: &str) -> syn::Error {
-        meta.error(format!("unknown attribute: {}", name))
-    }
-
-    /// Skip/ignore an attribute (parse but discard)
-    pub fn skip_string(meta: &ParseNestedMeta) -> syn::Result<()> {
-        let _: syn::LitStr = meta.value()?.parse()?;
-        Ok(())
-    }
-
-    /// Parse a bracketed array of expressions: `args = [10, 100, 1000]`
-    pub fn expr_array(meta: &ParseNestedMeta) -> syn::Result<Vec<syn::Expr>> {
-        meta.value()?;
-        let content;
-        syn::bracketed!(content in meta.input);
-        let items: syn::punctuated::Punctuated<syn::Expr, syn::Token![,]> =
-            syn::punctuated::Punctuated::parse_terminated(&content)?;
-        Ok(items.into_iter().collect())
-    }
-}
+mod attr;
+mod bench;
+mod compare;
+mod duration;
+mod layout;
+mod verify;
 
 /// Register a benchmark function
 ///
@@ -144,520 +51,32 @@ mod attr {
 /// #[flux::bench(runtime = "multi_thread", worker_threads = 4)]
 /// async fn async_benchmark(b: &mut Bencher) { ... }
 /// ```
+///
+/// `budget`, `warmup`, and `measurement` take a number with a unit: `ns`, `us`, `ms`, or `s`.
+/// A mean per-iteration time above `budget` fails the benchmark.
 #[proc_macro_attribute]
 pub fn bench(args: TokenStream, item: TokenStream) -> TokenStream {
-    let args = TokenStream2::from(args);
     let func = parse_macro_input!(item as ItemFn);
-
-    bench_impl(args, func)
-        .unwrap_or_else(|e| e.to_compile_error())
-        .into()
-}
-
-fn bench_impl(args: TokenStream2, func: ItemFn) -> Result<TokenStream2, syn::Error> {
-    // Parse configuration first (need to know if args is set before validating signature)
-    let config = parse_bench_config(args)?;
-
-    // Validate signature
-    validate_signature(&func, !config.args.is_empty())?;
-
-    // Generate identifiers
-    let fn_name = &func.sig.ident;
-    let fn_name_str = fn_name.to_string();
-
-    // Shared config values
-    let base_id = config.id.clone().unwrap_or_else(|| fn_name_str.clone());
-    let group = config
-        .group
-        .clone()
-        .unwrap_or_else(|| "default".to_string());
-    let severity = match config.severity.as_deref() {
-        Some("critical") => quote! { ::fluxbench::Severity::Critical },
-        Some("warning") => quote! { ::fluxbench::Severity::Warning },
-        _ => quote! { ::fluxbench::Severity::Info },
-    };
-    let threshold = config.threshold.unwrap_or(0.0);
-    let budget_ns = config
-        .budget_ns
-        .map(|v| quote! { Some(#v) })
-        .unwrap_or(quote! { None });
-    let tags: Vec<_> = config.tags.iter().map(|t| quote! { #t }).collect();
-
-    let depends_on_tokens: Vec<_> = config.depends_on.iter().map(|d| quote! { #d }).collect();
-
-    let warmup_ns_expr = config
-        .warmup_ns
-        .map(|v| quote! { Some(#v) })
-        .unwrap_or(quote! { None });
-    let measurement_ns_expr = config
-        .measurement_ns
-        .map(|v| quote! { Some(#v) })
-        .unwrap_or(quote! { None });
-    let samples_expr = config
-        .samples
-        .map(|v| quote! { Some(#v) })
-        .unwrap_or(quote! { None });
-    let sample_count_expr = config
-        .sample_count
-        .map(|v| quote! { Some(#v) })
-        .unwrap_or(quote! { None });
-    let iters_per_sample_expr = config
-        .iters_per_sample
-        .map(|v| quote! { Some(#v) })
-        .unwrap_or(quote! { None });
-    let min_iterations_expr = config
-        .min_iterations
-        .map(|v| quote! { Some(#v) })
-        .unwrap_or(quote! { None });
-    let max_iterations_expr = config
-        .max_iterations
-        .map(|v| quote! { Some(#v) })
-        .unwrap_or(quote! { None });
-
-    // ── Parameterized path: generate one BenchmarkDef per arg value ──────
-    if !config.args.is_empty() {
-        let is_async = func.sig.asyncness.is_some();
-
-        let mut registrations = Vec::new();
-        for (i, arg_expr) in config.args.iter().enumerate() {
-            let arg_label = expr_to_label(arg_expr);
-            let bench_id = format!("{}@{}", base_id, arg_label);
-            let wrapper_name = format_ident!("_flux_wrapper_{}_{}", fn_name, i);
-
-            let runner_block = if is_async {
-                let body_call = quote! { #fn_name(bencher, #arg_expr) };
-                generate_async_runner(&config.async_runtime, body_call)
-            } else {
-                quote! {
-                    #fn_name(bencher, #arg_expr);
-                }
-            };
-
-            registrations.push(quote! {
-                #[doc(hidden)]
-                #[allow(non_snake_case)]
-                fn #wrapper_name(bencher: &mut ::fluxbench::Bencher) {
-                    #runner_block
-                }
-
-                ::fluxbench::internal::inventory::submit! {
-                    ::fluxbench::BenchmarkDef {
-                        id: #bench_id,
-                        name: #fn_name_str,
-                        group: #group,
-                        severity: #severity,
-                        threshold: #threshold,
-                        budget_ns: #budget_ns,
-                        tags: &[#(#tags),*],
-                        runner_fn: #wrapper_name,
-                        file: file!(),
-                        line: line!(),
-                        module_path: module_path!(),
-                        warmup_ns: #warmup_ns_expr,
-                        measurement_ns: #measurement_ns_expr,
-                        samples: #samples_expr,
-                        sample_count: #sample_count_expr,
-                        iters_per_sample: #iters_per_sample_expr,
-                        min_iterations: #min_iterations_expr,
-                        max_iterations: #max_iterations_expr,
-                        depends_on: &[#(#depends_on_tokens),*],
-                    }
-                }
-            });
-        }
-
-        return Ok(quote! {
-            #func
-            #(#registrations)*
-        });
-    }
-
-    // ── Normal (non-parameterized) path ──────────────────────────────────
-    let wrapper_name = format_ident!("_flux_wrapper_{}", fn_name);
-
-    let is_async = func.sig.asyncness.is_some();
-    let runner_block = if is_async {
-        generate_async_runner(&config.async_runtime, quote! { #fn_name(bencher) })
-    } else {
-        quote! {
-            #fn_name(bencher);
-        }
-    };
-
-    Ok(quote! {
-        #func
-
-        #[doc(hidden)]
-        #[allow(non_snake_case)]
-        fn #wrapper_name(bencher: &mut ::fluxbench::Bencher) {
-            #runner_block
-        }
-
-        ::fluxbench::internal::inventory::submit! {
-            ::fluxbench::BenchmarkDef {
-                id: #base_id,
-                name: #fn_name_str,
-                group: #group,
-                severity: #severity,
-                threshold: #threshold,
-                budget_ns: #budget_ns,
-                tags: &[#(#tags),*],
-                runner_fn: #wrapper_name,
-                file: file!(),
-                line: line!(),
-                module_path: module_path!(),
-                warmup_ns: #warmup_ns_expr,
-                measurement_ns: #measurement_ns_expr,
-                samples: #samples_expr,
-                sample_count: #sample_count_expr,
-                iters_per_sample: #iters_per_sample_expr,
-                min_iterations: #min_iterations_expr,
-                max_iterations: #max_iterations_expr,
-                depends_on: &[#(#depends_on_tokens),*],
-            }
-        }
-    })
-}
-
-/// Generate the wrapper body for an async benchmark.
-///
-/// `body_call` creates the body future, for example `bench(bencher, arg)`.
-/// The wrapper builds one runtime and attaches it to the bencher.
-/// `drive_async_body` runs the body outside `block_on`, so `iter_async` can block per batch.
-/// A build error or a context error goes to the bencher. Nothing panics.
-fn generate_async_runner(config: &AsyncRuntimeConfig, body_call: TokenStream2) -> TokenStream2 {
-    let (runtime_builder, runtime_config) = async_runtime_tokens(config);
-
-    quote! {
-        let __flux_rt = match ::fluxbench::internal::tokio::runtime::Builder::#runtime_builder
-            #runtime_config
-            .build()
-        {
-            ::std::result::Result::Ok(__flux_rt) => ::std::sync::Arc::new(__flux_rt),
-            ::std::result::Result::Err(__flux_error) => {
-                bencher.attach_runtime_error(__flux_error.to_string());
-                return;
-            }
-        };
-        bencher.attach_runtime(::std::sync::Arc::clone(&__flux_rt));
-        if let ::std::result::Result::Err(__flux_error) =
-            ::fluxbench::internal::drive_async_body(&__flux_rt, #body_call)
-        {
-            bencher.record_error(__flux_error);
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-enum AsyncRuntimeConfig {
-    CurrentThread {
-        enable_time: bool,
-        enable_io: bool,
-    },
-    MultiThread {
-        worker_threads: Option<usize>,
-        enable_time: bool,
-        enable_io: bool,
-    },
-}
-
-impl Default for AsyncRuntimeConfig {
-    fn default() -> Self {
-        AsyncRuntimeConfig::CurrentThread {
-            enable_time: true,
-            enable_io: true,
-        }
-    }
-}
-
-#[derive(Default)]
-struct BenchConfig {
-    id: Option<String>,
-    group: Option<String>,
-    severity: Option<String>,
-    threshold: Option<f64>,
-    budget_ns: Option<u64>,
-    tags: Vec<String>,
-    async_runtime: AsyncRuntimeConfig,
-    warmup_ns: Option<u64>,
-    measurement_ns: Option<u64>,
-    samples: Option<u64>,
-    sample_count: Option<u64>,
-    iters_per_sample: Option<u64>,
-    min_iterations: Option<u64>,
-    max_iterations: Option<u64>,
-    /// Parameterized benchmark args: `args = [10, 100, 1000]`
-    args: Vec<syn::Expr>,
-    /// Dependencies: `depends_on = ["bench_a", "bench_b"]`
-    depends_on: Vec<String>,
-}
-
-fn parse_bench_config(args: TokenStream2) -> Result<BenchConfig, syn::Error> {
-    let mut config = BenchConfig::default();
-    let mut runtime_type: Option<String> = None;
-    let mut worker_threads: Option<usize> = None;
-    let mut enable_time = true;
-    let mut enable_io = true;
-
-    if args.is_empty() {
-        return Ok(config);
-    }
-
-    let parser = syn::meta::parser(|meta| {
-        let name = attr::name(&meta);
-        match name.as_str() {
-            "id" => config.id = Some(attr::string(&meta)?),
-            "group" => config.group = Some(attr::string(&meta)?),
-            "severity" => config.severity = Some(attr::string(&meta)?),
-            "threshold" => config.threshold = Some(attr::float(&meta)?),
-            "budget" => config.budget_ns = parse_duration(&attr::string(&meta)?),
-            "runtime" => runtime_type = Some(attr::string(&meta)?),
-            "worker_threads" => worker_threads = Some(attr::worker_threads(&meta)?),
-            "enable_time" => enable_time = attr::bool(&meta)?,
-            "enable_io" => enable_io = attr::bool(&meta)?,
-            "tags" => config.tags = attr::tags(&meta)?,
-            "iterations" => {
-                return Err(syn::Error::new_spanned(
-                    &meta.path,
-                    "`iterations` is not supported. Use `iters_per_sample`.",
-                ));
-            }
-            "warmup" => config.warmup_ns = parse_duration(&attr::string(&meta)?),
-            "measurement" => config.measurement_ns = parse_duration(&attr::string(&meta)?),
-            "samples" => config.samples = attr::int(&meta)?,
-            "sample_count" => config.sample_count = attr::int(&meta)?,
-            "iters_per_sample" => config.iters_per_sample = attr::int(&meta)?,
-            "min_iterations" => config.min_iterations = attr::int(&meta)?,
-            "max_iterations" => config.max_iterations = attr::int(&meta)?,
-            "args" => config.args = attr::expr_array(&meta)?,
-            "depends_on" => config.depends_on = attr::string_array(&meta)?,
-            _ => return Err(attr::unknown(&meta, &name)),
-        }
-        Ok(())
-    });
-
-    syn::parse::Parser::parse2(parser, args)?;
-
-    config.async_runtime = match runtime_type.as_deref() {
-        Some("multi_thread") | Some("multi-thread") => AsyncRuntimeConfig::MultiThread {
-            worker_threads,
-            enable_time,
-            enable_io,
-        },
-        _ => AsyncRuntimeConfig::CurrentThread {
-            enable_time,
-            enable_io,
-        },
-    };
-
-    Ok(config)
-}
-
-fn validate_signature(func: &ItemFn, has_args: bool) -> syn::Result<()> {
-    let expected = if has_args { 2 } else { 1 };
-    if func.sig.inputs.len() != expected {
-        let msg = if has_args {
-            "FluxBench: Parameterized benchmark must take two arguments: `&mut Bencher` and the parameter"
-        } else {
-            "FluxBench: Function must take exactly one argument: `&mut Bencher`"
-        };
-        return Err(syn::Error::new_spanned(&func.sig, msg));
-    }
-    Ok(())
-}
-
-/// Convert an expression to a safe, human-readable label for benchmark IDs.
-///
-/// Collapses whitespace and escapes path-unsafe characters so IDs are valid
-/// in file paths, URLs, and don't conflict with the `base_id/label` separator.
-///
-/// Examples: `10` → `"10"`, `1000` → `"1000"`, `vec![1, 2]` → `"vec![1,2]"`
-fn expr_to_label(expr: &syn::Expr) -> String {
-    let s = quote!(#expr).to_string();
-    // Collapse all whitespace
-    let collapsed: String = s.split_whitespace().collect::<Vec<_>>().join("");
-    // Escape characters that are unsafe in IDs, paths, or URLs
-    collapsed
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|' => '_',
-            c => c,
-        })
-        .collect()
-}
-
-/// Extract async runtime builder tokens from config (shared between normal and parameterized paths)
-fn async_runtime_tokens(config: &AsyncRuntimeConfig) -> (TokenStream2, TokenStream2) {
-    match config {
-        AsyncRuntimeConfig::CurrentThread {
-            enable_time,
-            enable_io,
-        } => {
-            let time = if *enable_time {
-                quote! { .enable_time() }
-            } else {
-                quote! {}
-            };
-            let io = if *enable_io {
-                quote! { .enable_io() }
-            } else {
-                quote! {}
-            };
-            (quote! { new_current_thread() }, quote! { #time #io })
-        }
-        AsyncRuntimeConfig::MultiThread {
-            worker_threads,
-            enable_time,
-            enable_io,
-        } => {
-            let workers = worker_threads
-                .map(|n| quote! { .worker_threads(#n) })
-                .unwrap_or(quote! {});
-            let time = if *enable_time {
-                quote! { .enable_time() }
-            } else {
-                quote! {}
-            };
-            let io = if *enable_io {
-                quote! { .enable_io() }
-            } else {
-                quote! {}
-            };
-            (quote! { new_multi_thread() }, quote! { #workers #time #io })
-        }
-    }
-}
-
-fn parse_duration(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if s.starts_with('-') {
-        return None;
-    }
-    if let Some(ms) = s.strip_suffix("ms") {
-        ms.trim()
-            .parse::<f64>()
-            .ok()
-            .map(|v| (v * 1_000_000.0) as u64)
-    } else if let Some(us) = s.strip_suffix("us").or_else(|| s.strip_suffix("µs")) {
-        us.trim().parse::<f64>().ok().map(|v| (v * 1_000.0) as u64)
-    } else if let Some(ns) = s.strip_suffix("ns") {
-        ns.trim().parse::<f64>().ok().map(|v| v as u64)
-    } else if let Some(s_val) = s.strip_suffix('s') {
-        s_val
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .map(|v| (v * 1_000_000_000.0) as u64)
-    } else {
-        None
-    }
+    finish(bench::bench_impl(TokenStream2::from(args), func))
 }
 
 /// Define a performance verification
+///
+/// `margin = N` widens a single top-level comparison by N percent of its right side.
 #[proc_macro_attribute]
 pub fn verify(args: TokenStream, item: TokenStream) -> TokenStream {
-    let args = TokenStream2::from(args);
     let input = parse_macro_input!(item as ItemStruct);
-
-    verify_impl(args, input)
-        .unwrap_or_else(|e| e.to_compile_error())
-        .into()
-}
-
-fn verify_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, syn::Error> {
-    let struct_name = &input.ident;
-    let struct_name_str = struct_name.to_string();
-
-    let mut expr = String::new();
-    let mut severity = quote! { ::fluxbench::Severity::Critical };
-    let mut margin = 0.0f64;
-
-    let parser = syn::meta::parser(|meta| {
-        let name = attr::name(&meta);
-        match name.as_str() {
-            "expr" => expr = attr::string(&meta)?,
-            "severity" => {
-                severity = match attr::string(&meta)?.as_str() {
-                    "critical" => quote! { ::fluxbench::Severity::Critical },
-                    "warning" => quote! { ::fluxbench::Severity::Warning },
-                    _ => quote! { ::fluxbench::Severity::Info },
-                };
-            }
-            "margin" => margin = attr::float(&meta)?,
-            "bench" => attr::skip_string(&meta)?,
-            _ => return Err(attr::unknown(&meta, &name)),
-        }
-        Ok(())
-    });
-
-    syn::parse::Parser::parse2(parser, args)?;
-
-    Ok(quote! {
-        #input
-
-        ::fluxbench::internal::inventory::submit! {
-            ::fluxbench::VerifyDef {
-                id: #struct_name_str,
-                expression: #expr,
-                severity: #severity,
-                margin: #margin,
-            }
-        }
-    })
+    finish(verify::verify_impl(TokenStream2::from(args), input))
 }
 
 /// Define a synthetic (computed) metric
 #[proc_macro_attribute]
 pub fn synthetic(args: TokenStream, item: TokenStream) -> TokenStream {
-    let args = TokenStream2::from(args);
     let input = parse_macro_input!(item as ItemStruct);
-
-    synthetic_impl(args, input)
-        .unwrap_or_else(|e| e.to_compile_error())
-        .into()
+    finish(verify::synthetic_impl(TokenStream2::from(args), input))
 }
 
-fn synthetic_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, syn::Error> {
-    let struct_name = &input.ident;
-    let struct_name_str = struct_name.to_string();
-
-    let mut id = struct_name_str.clone();
-    let mut formula = String::new();
-    let mut unit: Option<String> = None;
-
-    let parser = syn::meta::parser(|meta| {
-        let name = attr::name(&meta);
-        match name.as_str() {
-            "id" => id = attr::string(&meta)?,
-            "formula" | "expr" => formula = attr::string(&meta)?,
-            "unit" => unit = Some(attr::string(&meta)?),
-            "deps" => attr::skip_string(&meta)?,
-            _ => return Err(attr::unknown(&meta, &name)),
-        }
-        Ok(())
-    });
-
-    syn::parse::Parser::parse2(parser, args)?;
-
-    let unit_expr = match unit {
-        Some(u) => quote! { Some(#u) },
-        None => quote! { None },
-    };
-
-    Ok(quote! {
-        #input
-
-        ::fluxbench::internal::inventory::submit! {
-            ::fluxbench::SyntheticDef {
-                id: #id,
-                formula: #formula,
-                unit: #unit_expr,
-            }
-        }
-    })
-}
-
-/// Define a benchmark group
+/// Describe a benchmark group
 ///
 /// # Example
 ///
@@ -679,139 +98,48 @@ fn synthetic_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2,
 /// ```
 #[proc_macro_attribute]
 pub fn group(args: TokenStream, item: TokenStream) -> TokenStream {
-    let args = TokenStream2::from(args);
     let input = parse_macro_input!(item as ItemStruct);
-
-    group_impl(args, input)
-        .unwrap_or_else(|e| e.to_compile_error())
-        .into()
+    finish(layout::group_impl(TokenStream2::from(args), input))
 }
 
-fn group_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, syn::Error> {
-    let struct_name = &input.ident;
-    let struct_name_str = struct_name.to_string();
-
-    let mut id = struct_name_str.clone();
-    let mut description = String::new();
-    let mut tags: Vec<String> = Vec::new();
-    let mut parent: Option<String> = None;
-
-    let parser = syn::meta::parser(|meta| {
-        let name = attr::name(&meta);
-        match name.as_str() {
-            "id" => id = attr::string(&meta)?,
-            "description" | "desc" => description = attr::string(&meta)?,
-            "tags" => tags = attr::tags(&meta)?,
-            "parent" => parent = Some(attr::string(&meta)?),
-            _ => return Err(attr::unknown(&meta, &name)),
-        }
-        Ok(())
-    });
-
-    syn::parse::Parser::parse2(parser, args)?;
-
-    let tags_tokens: Vec<_> = tags.iter().map(|t| quote! { #t }).collect();
-    let parent_expr = match parent {
-        Some(p) => quote! { Some(#p) },
-        None => quote! { None },
-    };
-
-    Ok(quote! {
-        #input
-
-        ::fluxbench::internal::inventory::submit! {
-            ::fluxbench::GroupDef {
-                id: #id,
-                description: #description,
-                tags: &[#(#tags_tokens),*],
-                parent: #parent_expr,
-            }
-        }
-    })
-}
-
-/// Define a dashboard report
+/// Set the HTML report title, description, and chart grid
 ///
 /// # Example
 ///
 /// ```ignore
 /// #[flux::report(
 ///     title = "Performance Dashboard",
+///     description = "Nightly run",
 ///     layout = "grid(2, 2)"
 /// )]
 /// struct MyDashboard;
 /// ```
-///
-/// Note: Charts are added via separate ChartDef entries.
-/// This macro sets up the dashboard structure.
 #[proc_macro_attribute]
 pub fn report(args: TokenStream, item: TokenStream) -> TokenStream {
-    let args = TokenStream2::from(args);
     let input = parse_macro_input!(item as ItemStruct);
-
-    report_impl(args, input)
-        .unwrap_or_else(|e| e.to_compile_error())
-        .into()
+    finish(layout::report_impl(TokenStream2::from(args), input))
 }
 
-fn report_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, syn::Error> {
-    let struct_name = &input.ident;
-    let struct_name_str = struct_name.to_string();
-
-    let mut title = struct_name_str.clone();
-    let mut layout = (2u32, 2u32); // Default 2x2 grid
-
-    let parser = syn::meta::parser(|meta| {
-        let name = attr::name(&meta);
-        match name.as_str() {
-            "title" => title = attr::string(&meta)?,
-            "layout" => layout = parse_grid_layout(&attr::string(&meta)?).unwrap_or((2, 2)),
-            _ => return Err(attr::unknown(&meta, &name)),
-        }
-        Ok(())
-    });
-
-    syn::parse::Parser::parse2(parser, args)?;
-
-    let (rows, cols) = layout;
-
-    Ok(quote! {
-        #input
-
-        ::fluxbench::internal::inventory::submit! {
-            ::fluxbench::ReportDef {
-                title: #title,
-                layout: (#rows, #cols),
-                charts: &[], // Charts added separately
-            }
-        }
-    })
-}
-
-/// Parse grid layout string like "grid(2, 2)" or "2x2"
-fn parse_grid_layout(s: &str) -> Option<(u32, u32)> {
-    let s = s.trim();
-
-    // Try "grid(rows, cols)"
-    if let Some(inner) = s.strip_prefix("grid(").and_then(|s| s.strip_suffix(')')) {
-        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
-        if parts.len() == 2 {
-            if let (Ok(rows), Ok(cols)) = (parts[0].parse(), parts[1].parse()) {
-                return Some((rows, cols));
-            }
-        }
-    }
-
-    // Try "rowsxcols" format
-    if let Some(pos) = s.find('x') {
-        let (rows_str, cols_str) = s.split_at(pos);
-        let cols_str = &cols_str[1..]; // Skip 'x'
-        if let (Ok(rows), Ok(cols)) = (rows_str.trim().parse(), cols_str.trim().parse()) {
-            return Some((rows, cols));
-        }
-    }
-
-    None
+/// Add an SVG chart of one metric per benchmark to the HTML report
+///
+/// # Example
+///
+/// ```ignore
+/// #[flux::chart(
+///     title = "Sort latency",
+///     kind = "bar",
+///     metric = "p99",
+///     benchmarks = ["sort_small", "sort_large"],
+///     target = 5000,
+///     row = 1,
+///     col = 1
+/// )]
+/// struct SortChart;
+/// ```
+#[proc_macro_attribute]
+pub fn chart(args: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemStruct);
+    finish(layout::chart_impl(TokenStream2::from(args), input))
 }
 
 /// Define a comparison group for multiple benchmarks
@@ -822,156 +150,19 @@ fn parse_grid_layout(s: &str) -> Option<(u32, u32)> {
 /// #[flux::compare(
 ///     id = "parser_showdown",
 ///     title = "JSON Parser Comparison",
-///     benchmarks = ["bench_serde", "bench_simd_json", "bench_sonic", "bench_jiter", "bench_yyjson"],
+///     benchmarks = ["bench_serde", "bench_simd_json"],
 ///     baseline = "bench_serde",
 ///     metric = "mean"
 /// )]
 /// struct ParserComparison;
 /// ```
-///
-/// This creates a comparison group that will:
-/// - Display all benchmarks in a comparison table
-/// - Compute speedup ratios vs the baseline
-/// - Generate data for comparison charts
 #[proc_macro_attribute]
 pub fn compare(args: TokenStream, item: TokenStream) -> TokenStream {
-    let args = TokenStream2::from(args);
     let input = parse_macro_input!(item as ItemStruct);
-
-    compare_impl(args, input)
-        .unwrap_or_else(|e| e.to_compile_error())
-        .into()
+    finish(compare::compare_impl(TokenStream2::from(args), input))
 }
 
-fn compare_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, syn::Error> {
-    let struct_name = &input.ident;
-    let struct_name_str = struct_name.to_string();
-
-    let mut id = struct_name_str.clone();
-    let mut title = struct_name_str.clone();
-    let mut benchmarks: Vec<String> = Vec::new();
-    let mut baseline: Option<String> = None;
-    let mut metric = "mean".to_string();
-    let mut group: Option<String> = None;
-    let mut x_value: Option<String> = None;
-    let mut series: Option<Vec<String>> = None;
-
-    let parser = syn::meta::parser(|meta| {
-        let name = attr::name(&meta);
-        match name.as_str() {
-            "id" => id = attr::string(&meta)?,
-            "title" => title = attr::string(&meta)?,
-            "benchmarks" => benchmarks = attr::string_array(&meta)?,
-            "baseline" => baseline = Some(attr::string(&meta)?),
-            "metric" => metric = attr::string(&meta)?,
-            "group" => group = Some(attr::string(&meta)?),
-            "x" => x_value = Some(attr::string(&meta)?),
-            "series" => series = Some(attr::string_array(&meta)?),
-            _ => return Err(attr::unknown(&meta, &name)),
-        }
-        Ok(())
-    });
-
-    syn::parse::Parser::parse2(parser, args)?;
-
-    if benchmarks.is_empty() {
-        return Err(syn::Error::new_spanned(
-            &input,
-            "compare requires at least one benchmark in 'benchmarks' list",
-        ));
-    }
-
-    let baseline_expr = match &baseline {
-        Some(b) => quote! { Some(#b) },
-        None => quote! { None },
-    };
-
-    let group_expr = match &group {
-        Some(g) => quote! { Some(#g) },
-        None => quote! { None },
-    };
-
-    let x_expr = match &x_value {
-        Some(x) => quote! { Some(#x) },
-        None => quote! { None },
-    };
-
-    let series_expr = match &series {
-        Some(s) => quote! { Some(&[#(#s),*]) },
-        None => quote! { None },
-    };
-
-    Ok(quote! {
-        #input
-
-        ::fluxbench::internal::inventory::submit! {
-            ::fluxbench::CompareDef {
-                id: #id,
-                title: #title,
-                benchmarks: &[#(#benchmarks),*],
-                baseline: #baseline_expr,
-                metric: #metric,
-                group: #group_expr,
-                x: #x_expr,
-                series: #series_expr,
-            }
-        }
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bench_config_parses_sample_count_and_iters_per_sample() {
-        let config = parse_bench_config(quote!(sample_count = 250, iters_per_sample = 10)).unwrap();
-        assert_eq!(config.sample_count, Some(250));
-        assert_eq!(config.iters_per_sample, Some(10));
-        assert_eq!(config.samples, None);
-    }
-
-    #[test]
-    fn bench_config_rejects_iterations() {
-        let err = parse_bench_config(quote!(iterations = 5))
-            .err()
-            .map(|e| e.to_string());
-        assert_eq!(
-            err.as_deref(),
-            Some("`iterations` is not supported. Use `iters_per_sample`.")
-        );
-    }
-
-    #[test]
-    fn bench_config_rejects_zero_worker_threads() {
-        let err = parse_bench_config(quote!(runtime = "multi_thread", worker_threads = 0))
-            .err()
-            .map(|e| e.to_string());
-        assert_eq!(err.as_deref(), Some("`worker_threads` must be at least 1"));
-    }
-
-    #[test]
-    fn bench_config_accepts_one_worker_thread() {
-        let config =
-            parse_bench_config(quote!(runtime = "multi_thread", worker_threads = 1)).unwrap();
-        assert!(matches!(
-            config.async_runtime,
-            AsyncRuntimeConfig::MultiThread {
-                worker_threads: Some(1),
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn async_runner_drives_body_without_block_on_or_expect() {
-        let config = AsyncRuntimeConfig::default();
-        let tokens = generate_async_runner(&config, quote! { bench(bencher) }).to_string();
-        assert!(tokens.contains("drive_async_body"));
-        assert!(tokens.contains("attach_runtime"));
-        assert!(tokens.contains("attach_runtime_error"));
-        assert!(tokens.contains("new_current_thread"));
-        assert!(!tokens.contains("block_on"));
-        assert!(!tokens.contains("expect"));
-    }
+/// Turn a macro result into tokens, or into a compile error.
+fn finish(result: Result<TokenStream2, syn::Error>) -> TokenStream {
+    result.unwrap_or_else(|e| e.to_compile_error()).into()
 }

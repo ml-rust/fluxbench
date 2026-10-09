@@ -24,9 +24,12 @@ mod baseline;
 mod cli_args;
 mod config;
 mod cpu_pin;
+mod definitions;
 mod dispatch;
 mod executor;
+mod groups;
 mod planner;
+mod report_format;
 mod run_config;
 mod run_pipeline;
 mod selection;
@@ -42,4 +45,5 @@ pub use executor::{
     ExecutionConfig, Executor, IsolatedExecutor, build_report, compute_statistics,
     execute_verifications, format_human_output,
 };
+pub use report_format::ReportFormat;
 pub use supervisor::*;

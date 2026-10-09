@@ -165,6 +165,39 @@ fn disk_write(b: &mut Bencher) {
 
 Then run with: `cargo bench -- --tag network` or `cargo bench -- --skip-tag network`
 
+### Describing Groups
+
+`#[group]` describes a group that `#[bench(group = ...)]` names:
+
+```rust
+#[group(id = "parsing", description = "Parser performance", tags = "hot-path")]
+struct Parsing;
+
+#[group(id = "json_parsing", parent = "parsing", description = "JSON parsers")]
+struct JsonParsing;
+```
+
+- `tags`: every benchmark in the group and its child groups carries them for `--tag` and `--skip-tag`.
+- `parent`: `--group parsing` also selects `json_parsing`. The parent must be a `#[group]` or a benchmark group.
+- `description`, `tags`: the HTML report shows them in the group's section.
+- A duplicate `id` or a parent cycle is an error at startup.
+
+### Time Budget
+
+`budget` fails a benchmark whose mean time per iteration exceeds it:
+
+```rust
+#[bench(budget = "50us")]
+fn hot_path(b: &mut Bencher) {
+    b.iter(|| std::hint::black_box(2 + 2));
+}
+```
+
+- Units: `ns`, `us` (or `µs`), `ms`, `s`. A missing unit or a bad number is a compile error.
+- `warmup` and `measurement` take the same syntax.
+- Over budget, the status is `failed` with `failure.kind = "budget"`. The metrics stay in the report.
+- A failed `severity = "critical"` benchmark exits 1 while `ci.fail_on_critical` is on.
+
 ### Async Benchmarks
 
 ```rust
@@ -183,8 +216,8 @@ async fn async_with_setup(b: &mut Bencher) {
 }
 ```
 
-- Runtimes: `"current_thread"` (default) or `"multi_thread"`. Both work.
-- `worker_threads` must be at least 1. It applies to `"multi_thread"` only.
+- Runtimes: `"current_thread"` (default) or `"multi_thread"`. Any other value is a compile error.
+- `worker_threads` must be at least 1. It needs `runtime = "multi_thread"`, else it is a compile error.
 - The runtime builds once per benchmark, outside the timer.
 - `iter_async` times creating and awaiting each future. Each batch runs in one `block_on`.
 - Setup before `iter_async` can await, use `tokio::time`, and call `tokio::spawn`.
@@ -220,22 +253,39 @@ struct P99Check;
 
 **Severity Levels:**
 
-- `critical`: Fails the benchmark suite (exit code 1) while `ci.fail_on_critical` is on, the default
+- `critical` (default): Fails the benchmark suite (exit code 1) while `ci.fail_on_critical` is on, the default
 - `warning`: Reported but doesn't fail
 - `info`: Informational only
+- Any other value is a compile error.
+
+**Margin:** `margin = N` widens the rule's single top-level comparison by N percent of its right side.
+
+```rust
+// Passes while fib_iter <= fib_naive * 1.05
+#[verify(expr = "fib_iter < fib_naive", margin = 5)]
+struct IterNotSlower;
+```
+
+- The tolerance is `|right| * N / 100`.
+- `a < b` and `a <= b` pass when `a <= b + tolerance`.
+- `a > b` and `a >= b` pass when `a >= b - tolerance`.
+- `a == b` passes when `|a - b| <= tolerance`.
+- With a margin, the expression needs exactly one comparison outside parentheses, and no top-level `&&`, `||`, or `!=`. Otherwise the rule reports an evaluation error.
+- `margin` must be a number >= 0. The default 0 evaluates the expression as written.
 
 **Available Metrics** (for a benchmark named `bench_name`):
 
-| Suffix                              | Metric                              |
-| ----------------------------------- | ----------------------------------- |
-| _(none)_                            | Mean time (ns)                      |
-| `_median`                           | Median time                         |
-| `_min` / `_max`                     | Min / max time                      |
-| `_p50` `_p90` `_p95` `_p99` `_p999` | Percentiles                         |
-| `_std_dev`                          | Standard deviation                  |
-| `_skewness` / `_kurtosis`           | Distribution shape                  |
-| `_ci_lower` / `_ci_upper`           | 95% confidence interval bounds      |
-| `_throughput`                       | Operations per second (if measured) |
+| Suffix                              | Metric                                  |
+| ----------------------------------- | --------------------------------------- |
+| _(none)_ / `_mean`                  | Mean time (ns)                          |
+| `_median`                           | Median time                             |
+| `_min` / `_max`                     | Min / max time                          |
+| `_p50` `_p90` `_p95` `_p99` `_p999` | Percentiles                             |
+| `_std_dev`                          | Standard deviation                      |
+| `_skewness` / `_kurtosis`           | Distribution shape                      |
+| `_throughput`                       | Operations per second (1e9 / mean)      |
+| `_samples`                          | Sample count                            |
+| `_alloc_bytes` / `_alloc_count`     | Mean bytes / allocations per iteration  |
 
 ### Synthetic Metrics
 
@@ -280,6 +330,7 @@ struct StringComparison;
 ```
 
 Generates a table showing speedup vs baseline for each benchmark.
+`metric` is one of `mean` (default), `median`, `min`, `max`, `p50`, `p90`, `p95`, `p99`, `p999`. Any other value is a compile error.
 
 ### Series Comparison
 
@@ -350,11 +401,11 @@ cargo bench -- --sample-count 250              # Target sample count (no cap)
 cargo bench -- --samples 500                   # Fixed mode: 500 one-iteration samples
 cargo bench -- --min-iterations 100            # Minimum total measurement iterations
 cargo bench -- --isolated=false                # In-process mode
-cargo bench -- --worker-timeout 120            # Worker timeout in seconds
+cargo bench -- --worker-timeout 2m             # Worker timeout; a bare number means seconds
 
-# Output formats
-cargo bench -- --format json --output results.json
-cargo bench -- --format html --output results.html
+# Output formats: human, json, github-summary (alias github), github-action, csv, html
+cargo bench -- --format json --output results.json   # ./results.json, or <output.directory>/results.json when set
+cargo bench -- --format html --output ./results.html # Always ./results.html
 cargo bench -- --format csv --output results.csv
 cargo bench -- --format github-summary         # GitHub Actions summary
 
@@ -370,56 +421,103 @@ cargo bench -- --dry-run
 
 Run `cargo bench -- --help` for the full option reference.
 
+- An invalid filter regex is an error that names the regex.
+- An unknown `--group`, `--tag`, or `--skip-tag` is an error that lists the known values.
+- An unknown `--format` value is a usage error (exit 2).
+- A valid filter that matches nothing prints `No benchmarks found.` on stderr and exits 0. Formats other than `human` also write a valid empty report: JSON with no results, CSV with only the header, and so on.
+- A bare `--output` file name such as `results.json` goes under `output.directory` when that key is set. Without it, the name stays in the current directory.
+- A bare `--baseline` or `--save-baseline` file name goes under `output.directory`, else under `target/fluxbench`.
+- Any path with a directory part, such as `./results.json`, stays as written.
+
 ## Configuration
 
 FluxBench works out of the box with sensible defaults — no configuration file is needed. For workspace-wide customization, you can optionally create a `flux.toml` in your project root. FluxBench auto-discovers it by walking up from the current directory.
 
 Settings are applied in this priority order: **macro attribute > CLI flag > flux.toml > built-in default**.
 
+Every key below is real, and every real key is listed. These are errors that stop the run before any benchmark starts:
+
+- An unknown table or key. The message names the file, the key, and the valid keys.
+- Malformed TOML. The message names the file, line, and column.
+- An unreadable file.
+- A bad value, such as `timeout = "soon"` or `confidence_level = 1.5`. The message names the key and the value.
+
+A missing file uses the defaults. Relative paths resolve against the current directory.
+
 ### Runner
 
 ```toml
 [runner]
 warmup_time = "500ms"        # Warmup before measurement (default: "3s")
-measurement_time = "1s"      # Measurement duration (default: "5s")
-timeout = "30s"              # Per-benchmark timeout (default: "60s")
-isolation = "process"        # "process", "in-process", or "thread" (default: "process")
-bootstrap_iterations = 1000  # Bootstrap resamples for CIs (default: 10000)
-confidence_level = 0.95      # Confidence level, 0.0–1.0 (default: 0.95)
+measurement_time = "1s"      # Measurement duration, above 0 (default: "5s")
+timeout = "30s"              # Worker timeout per benchmark, above 0 (default: "60s")
+isolation = "process"        # "process" or "in-process" (default: "process")
+bootstrap_iterations = 1000  # Bootstrap resamples for CIs; 0 skips the bootstrap (default: 10000)
+confidence_level = 0.95      # Confidence level, between 0 and 1 exclusive (default: 0.95)
 # sample_count = 100         # Target sample count, minimum 2, no upper cap (default: 100)
-# samples = 5                # Fixed mode: N samples of one iteration each, no warmup
+# samples = 5                # Fixed mode: N samples of one iteration each, no warmup, minimum 2
 # min_iterations = 100       # Minimum total measurement iterations (default: auto-tuned)
-# max_iterations = 1000000   # Maximum total measurement iterations (default: auto-tuned)
-# jobs = 4                   # Parallel isolated workers (default: sequential)
+# max_iterations = 1000000   # Maximum total measurement iterations, >= min_iterations (default: auto-tuned)
+# jobs = 4                   # Parallel isolated workers, minimum 1 (default: 1)
 # pin_cpus = false           # Pin each isolated worker to its own CPU (default: true)
 ```
+
+- Durations take `ns`, `us`, `ms`, `s`, or `m`. A bare number means seconds.
+- `timeout`: `--worker-timeout` overrides it. It applies to isolated mode only.
+  - A timeout below a benchmark's warmup + measurement + 2 s rises to that value. One stderr warning names both values.
+- `isolation`: `--isolated=true` or `--isolated=false` overrides it.
+- Before any benchmark runs, each benchmark's resolved settings are checked. A bad combination is an error that names the benchmark, e.g. `--warmup 0` outside fixed mode.
 
 ### Allocator
 
 ```toml
 [allocator]
-track = true                 # Track allocations during benchmarks (default: true)
-fail_on_allocation = false   # Fail if any allocation occurs during measurement (default: false)
-# max_bytes_per_iter = 1024  # Maximum bytes per iteration (default: unlimited)
+track = true                 # Track allocations during measurement (default: true)
+fail_on_allocation = false   # Fail a benchmark whose mean allocations per iteration are above 0 (default: false)
+# max_bytes_per_iter = 1024  # Fail a benchmark whose mean bytes per iteration are above this (default: unlimited)
 ```
+
+- A benchmark that breaks a limit gets status `failed` and `failure.kind = "allocation_limit"`. Its metrics stay in the report.
+- The limits use the unrounded mean per iteration across samples.
+- The limits need `track = true` and `TrackingAllocator` as `#[global_allocator]`. Otherwise one stderr warning says the checks do not run.
+  - All-zero totals cannot tell "no allocations" from "no `TrackingAllocator`", so the checks do not run then either.
 
 ### Output
 
 ```toml
 [output]
-format = "human"                    # "human", "json", "github", "html", "csv" (default: "human")
-directory = "target/fluxbench"      # Output directory for reports and baselines (default: "target/fluxbench")
+format = "human"                    # Report format when --format is absent (default: "human")
+# directory = "target/fluxbench"    # Directory for bare file names (default: unset)
 save_baseline = false               # Save a JSON baseline after each run (default: false)
-# baseline_path = "baseline.json"   # Compare against a saved baseline (default: unset)
+# baseline_path = "baseline.json"   # Baseline file for --baseline and saves (default: "baseline.json")
 ```
+
+- `format`: `human`, `json`, `github-summary` (alias `github`), `github-action`, `csv`, or `html`. `--format` overrides it.
+- `directory`: a bare file name such as `r.json` given to `--output`, `--baseline`, `--save-baseline`, or `baseline_path` goes under it.
+  - Unset: a bare `--output` name stays in the current directory. Bare baseline names go under `target/fluxbench`.
+  - A path with a directory part, such as `./r.json` or `ci/r.json`, stays as written.
+  - Missing directories are created when a report or baseline is written.
+- `baseline_path`: the file that `--baseline` and `--save-baseline` use without a value. With no key, it is `baseline.json` under `directory`, else `target/fluxbench/baseline.json`.
+- `--output` unset writes the report to stdout.
+
+### Visuals
+
+```toml
+[visuals]
+theme = "light"              # HTML report theme: "light" or "dark" (default: "light")
+width = 1280                 # #[chart] canvas width in pixels, at least 200 (default: 1280)
+height = 720                 # #[chart] canvas height in pixels, at least 150 (default: 720)
+```
+
+They apply to `--format html` only. A narrow page shrinks a chart and keeps its aspect ratio.
 
 ### CI Integration
 
 ```toml
 [ci]
-regression_threshold = 5.0   # A significant slowdown above this percentage is a regression (default: 5.0)
-github_annotations = true    # Emit ::warning and ::error annotations on PRs (default: false)
-fail_on_critical = true      # Exit non-zero on critical verification failures and critical regressions (default: true)
+regression_threshold = 5.0   # A significant slowdown above this percentage is a regression, >= 0 (default: 5.0)
+github_annotations = true    # Print ::warning and ::error annotations on stderr (default: false)
+fail_on_critical = true      # Exit 1 on critical verification failures and critical benchmarks' regressions or failures (default: true)
 ```
 
 #### Regression detection
@@ -441,6 +539,8 @@ fail_on_critical = true      # Exit non-zero on critical verification failures a
 | Critical verification failure | exit 1 | warning |
 | Regression on a `severity = "critical"` benchmark | exit 1 | warning |
 | Regression on a `warning` or `info` benchmark | warning | warning |
+| Failed `severity = "critical"` benchmark, e.g. over `budget` | exit 1 | warning |
+| Failed `warning` or `info` benchmark | warning | warning |
 
 A missing `--baseline` file prints a warning and runs without a comparison. An unreadable or invalid baseline file, or one with a newer schema, is an error. `compare <REF>` requires the baseline file and checks that its commit matches `REF`. `compare` uses the same executor as a normal run: isolation, `--jobs`, and CPU pinning apply.
 
@@ -505,7 +605,33 @@ bench_fibonacci_iter,bench_fibonacci_iter,compute,passed,127.42,...
 
 ### HTML
 
-Self-contained interactive report with charts and tables.
+One self-contained page with inline CSS and SVG. It has no scripts.
+
+- Header: title and description from `#[report]`, else "FluxBench Report". Then commit, branch, and time.
+- Summary: passed, failed, crashed, and skipped counts.
+- Charts: one SVG per `#[chart]`, in the `#[report]` layout grid.
+- Results: one table per group, nested under parent groups. Each shows the `#[group]` description and tags.
+- `[visuals]` sets the theme and the chart canvas size.
+
+```rust
+#[report(title = "Parser Dashboard", description = "Nightly run", layout = "grid(1, 2)")]
+struct Dashboard;
+
+#[chart(
+    title = "Mean time",
+    kind = "bar",                       // "bar" (default) or "line"
+    metric = "mean",                    // default "mean"
+    benchmarks = ["parse_small", "parse_large"],
+    target = 5000,                      // optional line, in the metric's unit (ns for times)
+    row = 1, col = 1                    // optional 1-based cell; both or neither
+)]
+struct MeanChart;
+```
+
+- `layout`: `"grid(rows, cols)"` or `"RxC"`, each at least 1. Default `grid(2, 2)`. A bad value is a compile error.
+- `metric`: `mean`, `median`, `min`, `max`, `p50`, `p90`, `p95`, `p99`, `p999`, `std_dev`, `throughput`, `alloc_bytes`, `alloc_count`, `mean_cycles`.
+- A benchmark without data, e.g. filtered out or crashed, shows `(no data)` under its slot.
+- Startup errors: more than one `#[report]`, an unknown chart metric or benchmark ID, a cell outside the layout, or two charts in one cell.
 
 ### GitHub Summary
 
@@ -543,6 +669,7 @@ Results will include allocation metrics for each benchmark:
 - **alloc_count** — number of allocations per iteration
 
 These appear in JSON, CSV, and human output automatically.
+`[allocator]` limits in `flux.toml` can fail a benchmark on them. See [Allocator](#allocator).
 
 > **Note:** `#[global_allocator]` must be declared in the binary crate (your `benches/*.rs` file),
 > not in a library. Rust allows only one global allocator per binary. Without it, `track = true`
@@ -576,11 +703,14 @@ A failed benchmark reports status `crashed` or `failed` and a `failure.kind`:
 | -------------- | ------------------------------------------------------------------------- |
 | `panic`        | The body panicked. `message` holds the panic text and location. `backtrace` comes from the panic site. |
 | `signal`       | A signal killed the worker. `failure.signal` holds the name, e.g. `SIGSEGV` or `SIGABRT`. Unix only. |
-| `timeout`      | The worker exceeded `--worker-timeout`. `message` states the partial sample count. |
+| `timeout`      | The worker exceeded the worker timeout (`--worker-timeout`, else `runner.timeout`). `message` states the partial sample count. |
 | `crashed`      | The worker exited with a code, broke the IPC stream, or did not start.    |
 | `unknown`      | The body never called `b.iter*`, or another measurement error occurred.   |
+| `budget`       | The mean time per iteration exceeded `#[bench(budget)]`.                  |
+| `allocation_limit` | The benchmark broke `allocator.fail_on_allocation` or `allocator.max_bytes_per_iter`. |
 
 `panic`, `signal`, `timeout`, and `crashed` set status `crashed`, so the run exits with code 1.
+`unknown`, `budget`, and `allocation_limit` set status `failed`. A failed critical benchmark exits 1 while `ci.fail_on_critical` is on.
 
 Workers stream samples to the supervisor during measurement. On a timeout, the supervisor sends SIGTERM and collects the samples sent so far for 500 ms. Then it sends SIGKILL. The partial samples never count as a pass and never form metrics. On other platforms, a timeout kills the worker at once.
 

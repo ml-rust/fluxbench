@@ -50,17 +50,25 @@ pub(super) fn progress_bar(len: usize) -> ProgressBar {
     pb
 }
 
-/// Mean per-iteration allocation bytes and count across samples, rounded.
+/// Mean per-iteration allocation bytes and count across samples, unrounded.
 ///
-/// Each sample already holds a per-iteration mean. Returns `(0, 0)` for no samples.
-pub(super) fn mean_allocations(samples: &[Sample]) -> (u64, u64) {
+/// Each sample already holds a per-iteration mean. Returns `(0.0, 0.0)` for no samples.
+pub(super) fn exact_allocations(samples: &[Sample]) -> (f64, f64) {
     if samples.is_empty() {
-        return (0, 0);
+        return (0.0, 0.0);
     }
     let n = samples.len() as f64;
     let bytes: f64 = samples.iter().map(|s| s.alloc_bytes).sum();
     let count: f64 = samples.iter().map(|s| s.alloc_count).sum();
-    ((bytes / n).round() as u64, (count / n).round() as u64)
+    (bytes / n, count / n)
+}
+
+/// Mean per-iteration allocation bytes and count across samples, rounded.
+///
+/// Returns `(0, 0)` for no samples.
+pub(super) fn mean_allocations(samples: &[Sample]) -> (u64, u64) {
+    let (bytes, count) = exact_allocations(samples);
+    (bytes.round() as u64, count.round() as u64)
 }
 
 /// Configuration for benchmark execution
@@ -153,8 +161,7 @@ impl ExecutionConfig {
             sample_count: u32::try_from(self.sample_count).unwrap_or(u32::MAX),
             iters_per_sample: self.iters_per_sample,
             track_allocations: self.track_allocations,
-            fail_on_allocation: false,
-            timeout_ns: timeout.as_nanos() as u64,
+            timeout_ns: u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX),
         }
     }
 }
@@ -191,6 +198,10 @@ pub struct BenchExecutionResult {
     pub alloc_bytes: u64,
     /// Mean allocation count per iteration across samples
     pub alloc_count: u64,
+    /// Unrounded mean bytes per iteration. Allocation limits use it.
+    pub alloc_bytes_exact: f64,
+    /// Unrounded mean allocation count per iteration. Allocation limits use it.
+    pub alloc_count_exact: f64,
     pub duration_ns: u64,
     pub error_message: Option<String>,
     /// Report string of the failure kind, e.g. `panic`, `timeout`, `signal`
@@ -272,6 +283,8 @@ impl Executor {
                     bench_result.samples.iter().map(|s| s.cpu_cycles).collect();
 
                 let (alloc_bytes, alloc_count) = mean_allocations(&bench_result.samples);
+                let (alloc_bytes_exact, alloc_count_exact) =
+                    exact_allocations(&bench_result.samples);
 
                 BenchExecutionResult {
                     benchmark_id: bench.id.to_string(),
@@ -284,6 +297,8 @@ impl Executor {
                     cpu_cycles,
                     alloc_bytes,
                     alloc_count,
+                    alloc_bytes_exact,
+                    alloc_count_exact,
                     duration_ns,
                     error_message: None,
                     failure_kind: None,
@@ -341,6 +356,8 @@ pub(super) fn error_result(
         cpu_cycles: Vec::new(),
         alloc_bytes: 0,
         alloc_count: 0,
+        alloc_bytes_exact: 0.0,
+        alloc_count_exact: 0.0,
         duration_ns,
         error_message: Some(message),
         failure_kind: Some(kind.to_string()),
@@ -354,31 +371,20 @@ pub(super) fn error_result(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use fluxbench_core::Severity;
 
     /// Minimal benchmark definition for executor tests.
     pub(in crate::executor) fn bench_def() -> BenchmarkDef {
-        BenchmarkDef {
-            id: "b",
-            name: "b",
-            group: "default",
-            severity: Severity::Info,
-            threshold: 0.0,
-            budget_ns: None,
-            tags: &[],
-            runner_fn: |_| {},
-            file: "",
-            line: 0,
-            module_path: "",
-            warmup_ns: None,
-            measurement_ns: None,
-            samples: None,
-            sample_count: None,
-            iters_per_sample: None,
-            min_iterations: None,
-            max_iterations: None,
-            depends_on: &[],
-        }
+        crate::test_support::bench_def("b")
+    }
+
+    #[test]
+    fn exact_allocations_keep_fractions() {
+        let samples = [
+            Sample::new(10.0, 0.0, 0.0, 0.0, 4),
+            Sample::new(10.0, 0.0, 1.0, 0.25, 4),
+        ];
+        assert_eq!(exact_allocations(&samples), (0.5, 0.125));
+        assert_eq!(mean_allocations(&samples), (1, 0));
     }
 
     #[test]

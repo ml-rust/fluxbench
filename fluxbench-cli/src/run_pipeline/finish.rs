@@ -1,20 +1,13 @@
-//! Shared tail of a run: report, baseline comparison, output, baseline save, and exit status.
+//! Shared tail of a run: checks, report, baseline comparison, output, baseline save, and exit status.
 
+use super::checks::apply_checks;
 use super::execute::Execution;
 use super::exit::{ci_outcome, print_outcome};
-use crate::baseline::{
-    ComparisonSettings, apply_baseline_comparison, format_comparison_output,
-    save_baseline_if_needed,
-};
-use crate::{
-    Cli, FluxConfig, build_report, compute_statistics, execute_verifications, format_human_output,
-    status,
-};
+use super::output::{render_report, write_report};
+use crate::baseline::{ComparisonSettings, apply_baseline_comparison, save_baseline_if_needed};
+use crate::{Cli, FluxConfig, build_report, compute_statistics, execute_verifications, status};
 use fluxbench_logic::aggregate_verifications;
-use fluxbench_report::{
-    OutputFormat, Report, generate_csv_report, generate_github_action_benchmark,
-    generate_github_summary, generate_html_report, generate_json_report,
-};
+use fluxbench_report::{HtmlOptions, OutputFormat, Report};
 use std::collections::HashMap;
 use std::io::Write;
 
@@ -25,16 +18,27 @@ pub(crate) fn finish(
     cli: &Cli,
     config: &FluxConfig,
     format: OutputFormat,
+    html: &HtmlOptions,
     execution: Execution,
     baseline: Option<&Report>,
 ) -> anyhow::Result<()> {
     let Execution {
-        results,
+        mut results,
         exec_config,
         started,
+        budgets,
     } = execution;
 
     let stats = compute_statistics(&results, &exec_config);
+    for warning in apply_checks(
+        &mut results,
+        &stats,
+        &budgets,
+        &config.allocator,
+        exec_config.track_allocations,
+    ) {
+        eprintln!("{warning}");
+    }
     let total_duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     let mut report = build_report(&results, &stats, &exec_config, total_duration_ms);
 
@@ -68,33 +72,11 @@ pub(crate) fn finish(
         status::print_github_annotations(&report);
     }
 
-    let output = match format {
-        OutputFormat::Json => generate_json_report(&report)?,
-        OutputFormat::GithubSummary => generate_github_summary(&report),
-        OutputFormat::GithubActionBenchmark => generate_github_action_benchmark(&report),
-        OutputFormat::Html => generate_html_report(&report),
-        OutputFormat::Csv => generate_csv_report(&report),
-        OutputFormat::Human => {
-            let mut text = format_human_output(&report);
-            if let Some(baseline) = baseline {
-                text.push_str(&format_comparison_output(&report, baseline));
-            }
-            text
-        }
-    };
-
-    if let Some(ref path) = cli.output {
-        let mut file = std::fs::File::create(path).map_err(|e| {
-            anyhow::anyhow!(
-                "cannot create output file {}: {e}. Check the --output path.",
-                path.display()
-            )
-        })?;
-        file.write_all(output.as_bytes())?;
-        eprintln!("Report written to: {}", path.display());
-    } else {
-        print!("{}", output);
-    }
+    write_report(
+        cli,
+        config,
+        &render_report(format, &report, baseline, html)?,
+    )?;
 
     save_baseline_if_needed(cli, config, &report, &results)?;
 

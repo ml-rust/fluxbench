@@ -5,13 +5,14 @@
 //! - JSON (machine-readable)
 //! - GitHub Summary (Markdown for $GITHUB_STEP_SUMMARY)
 //! - CSV (spreadsheet-compatible)
-//! - HTML (interactive dashboard)
+//! - HTML (single page with group sections and SVG charts)
 
 mod csv;
 mod github;
 mod github_action;
 mod html;
 mod json;
+mod metric;
 mod report;
 
 pub use csv::generate_csv_report;
@@ -20,8 +21,11 @@ pub use github::{
     scale_throughput,
 };
 pub use github_action::generate_github_action_benchmark;
-pub use html::generate_html_report;
+pub use html::{
+    HtmlChart, HtmlGroup, HtmlOptions, HtmlTheme, generate_html_report, generate_html_report_with,
+};
 pub use json::{ReportSchema, generate_json_report};
+pub use metric::{CHART_METRICS, metric_value};
 pub use report::{
     BenchmarkMetrics, BenchmarkReportResult, BenchmarkStatus, Comparison, ComparisonEntry,
     ComparisonMethod, ComparisonResult, ComparisonSeries, FailureInfo, REPORT_SCHEMA_VERSION,

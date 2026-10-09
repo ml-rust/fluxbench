@@ -1,8 +1,8 @@
 //! Entry points: parse arguments, set up logging, and dispatch the subcommand.
 
 use crate::run_pipeline::{compare_benchmarks, run_benchmarks};
-use crate::selection::list_benchmarks;
-use crate::{Cli, Commands, FluxConfig, run_config};
+use crate::selection::{list_benchmarks, select_benchmarks};
+use crate::{Cli, Commands, FluxConfig, definitions, run_config};
 use clap::Parser;
 use fluxbench_core::WorkerMain;
 use fluxbench_report::OutputFormat;
@@ -18,6 +18,8 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 /// Run the FluxBench CLI with pre-parsed arguments.
+///
+/// A malformed flux.toml, an invalid filter, or a bad report definition is an error before any benchmark runs.
 pub fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
     // Worker mode comes before any other initialization.
     if cli.flux_worker {
@@ -32,21 +34,27 @@ pub fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     // flux.toml configuration. CLI flags override it.
-    let config = FluxConfig::discover().unwrap_or_default();
-    let format: OutputFormat = cli.format.parse().unwrap_or(OutputFormat::Human);
-    let jobs = run_config::resolve_jobs(&cli, &config);
+    let config = FluxConfig::discover()?.unwrap_or_default();
 
-    match cli.command {
-        Some(Commands::List) => list_benchmarks(&cli),
-        Some(Commands::Run) => run_benchmarks(&cli, &config, format, jobs)?,
-        Some(Commands::Compare { ref git_ref }) => {
-            compare_benchmarks(&cli, &config, git_ref, format, jobs)?
-        }
-        None if cli.dry_run => list_benchmarks(&cli),
-        None => run_benchmarks(&cli, &config, format, jobs)?,
+    let list_only =
+        matches!(cli.command, Some(Commands::List)) || (cli.command.is_none() && cli.dry_run);
+    if list_only {
+        return list_benchmarks(&cli);
     }
 
-    Ok(())
+    let format = OutputFormat::from(cli.format.unwrap_or(config.output.format));
+    let jobs = run_config::resolve_jobs(&cli, &config)?;
+    let selection = select_benchmarks(&cli)?;
+    let html = definitions::html_options(&config, &selection.groups, &selection.all)?;
+
+    match cli.command {
+        Some(Commands::Compare { ref git_ref }) => {
+            compare_benchmarks(&cli, &config, git_ref, format, jobs, &selection, &html)
+        }
+        Some(Commands::List) | Some(Commands::Run) | None => {
+            run_benchmarks(&cli, &config, format, jobs, &selection, &html)
+        }
+    }
 }
 
 /// Run as a worker process (IPC mode)

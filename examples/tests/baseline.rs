@@ -120,7 +120,16 @@ fn critical_regression_fails_and_unchanged_run_passes() {
     assert_eq!(same.status.code(), Some(0), "{}", describe(&same));
     let same_report = report(&same);
     let cmp = &entry(&same_report, "critical_spin")["comparison"];
-    assert_eq!(cmp["is_significant"], false, "{cmp:#}");
+    // Noise can show an improvement. Only a slowdown past the threshold is an error.
+    assert!(
+        cmp["relative_change"].as_f64().unwrap_or(f64::MAX) <= 50.0,
+        "{cmp:#}"
+    );
+    assert_eq!(
+        same_report["summary"]["regressions"].as_u64(),
+        Some(0),
+        "{same_report:#}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

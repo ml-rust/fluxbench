@@ -3,7 +3,8 @@
 //! A panic, signal, timeout, or lost worker fails only its own benchmark.
 
 use super::execution::{
-    BenchExecutionResult, ExecutionConfig, error_result, mean_allocations, progress_bar,
+    BenchExecutionResult, ExecutionConfig, error_result, exact_allocations, mean_allocations,
+    progress_bar,
 };
 use crate::supervisor::{IpcBenchmarkResult, IpcBenchmarkStatus, Supervisor};
 use fluxbench_core::BenchmarkDef;
@@ -159,6 +160,7 @@ fn convert_ipc_result(
     let cpu_cycles: Vec<f64> = measured.iter().map(|s| s.cpu_cycles).collect();
 
     let (alloc_bytes, alloc_count) = mean_allocations(measured);
+    let (alloc_bytes_exact, alloc_count_exact) = exact_allocations(measured);
 
     BenchExecutionResult {
         benchmark_id: bench.id.to_string(),
@@ -171,6 +173,8 @@ fn convert_ipc_result(
         cpu_cycles,
         alloc_bytes,
         alloc_count,
+        alloc_bytes_exact,
+        alloc_count_exact,
         duration_ns: ipc_result.total_duration_nanos,
         error_message,
         failure_kind,

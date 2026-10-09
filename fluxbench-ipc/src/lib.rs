@@ -20,8 +20,9 @@ pub use ring_buffer::SampleRingBuffer;
 ///
 /// Version 2 carries `f64` sample means and the per-sample iteration count.
 /// Version 3 adds `FailureKind::Signal(name)` and `FailureKind::Crashed`.
+/// Version 4 drops `BenchmarkConfig::fail_on_allocation`. The supervisor checks allocations.
 /// The worker streams sample batches during measurement.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Env var the supervisor sets to the CPU index a worker pins to.
 ///

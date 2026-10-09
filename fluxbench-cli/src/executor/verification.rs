@@ -91,6 +91,15 @@ pub fn execute_verifications(
             context.set(format!("{}_p99", bench_id), stats.p99);
             context.set(format!("{}_p999", bench_id), stats.p999);
 
+            // Distribution shape
+            context.set(format!("{}_skewness", bench_id), stats.skewness);
+            context.set(format!("{}_kurtosis", bench_id), stats.kurtosis);
+
+            // Operations per second, when the mean is above zero
+            if stats.mean > 0.0 {
+                context.set(format!("{}_throughput", bench_id), 1e9 / stats.mean);
+            }
+
             // Sample info
             context.set(format!("{}_samples", bench_id), stats.sample_count as f64);
 
@@ -120,7 +129,10 @@ pub fn execute_verifications(
             Some(s) => s,
             None => continue,
         };
-        let baseline_value = get_metric_value(baseline_stats, cmp.metric);
+        // `#[compare]` checks the metric name at compile time.
+        let Some(baseline_value) = get_metric_value(baseline_stats, cmp.metric) else {
+            continue;
+        };
 
         // Build entries for all benchmarks
         let entries: Vec<ComparisonEntry> = cmp
@@ -128,7 +140,7 @@ pub fn execute_verifications(
             .iter()
             .filter_map(|bench_id| {
                 let bench_stats = stats_lookup.get(bench_id)?;
-                let value = get_metric_value(bench_stats, cmp.metric);
+                let value = get_metric_value(bench_stats, cmp.metric)?;
                 let speedup = if value > 0.0 {
                     baseline_value / value
                 } else {
@@ -293,18 +305,18 @@ pub fn execute_verifications(
     )
 }
 
-/// Get metric value from stats based on metric name
-fn get_metric_value(stats: &SummaryStatistics, metric: &str) -> f64 {
+/// Get metric value from stats based on metric name. Matches `COMPARE_METRICS` in fluxbench-macros.
+fn get_metric_value(stats: &SummaryStatistics, metric: &str) -> Option<f64> {
     match metric {
-        "mean" => stats.mean,
-        "median" => stats.median,
-        "min" => stats.min,
-        "max" => stats.max,
-        "p50" => stats.p50,
-        "p90" => stats.p90,
-        "p95" => stats.p95,
-        "p99" => stats.p99,
-        "p999" => stats.p999,
-        _ => stats.mean, // Default to mean
+        "mean" => Some(stats.mean),
+        "median" => Some(stats.median),
+        "min" => Some(stats.min),
+        "max" => Some(stats.max),
+        "p50" => Some(stats.p50),
+        "p90" => Some(stats.p90),
+        "p95" => Some(stats.p95),
+        "p99" => Some(stats.p99),
+        "p999" => Some(stats.p999),
+        _ => None,
     }
 }

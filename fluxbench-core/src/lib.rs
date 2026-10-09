@@ -39,7 +39,8 @@ pub struct BenchmarkDef {
     pub severity: Severity,
     /// Per-benchmark regression threshold percentage (0.0 = use global threshold)
     pub threshold: f64,
-    /// Absolute time budget in nanoseconds
+    /// Time budget for the mean per-iteration time, in nanoseconds.
+    /// A mean above it fails the benchmark.
     pub budget_ns: Option<u64>,
     /// Tags for filtering
     pub tags: &'static [&'static str],
@@ -80,58 +81,62 @@ pub enum Severity {
     Info,
 }
 
-/// Group definition for organizing benchmarks
+/// Group definition registered via `#[flux::group]`.
+///
+/// `id` matches the `group` of `#[bench]`.
+/// The HTML report shows `description` and `tags` in the group's section.
 #[derive(Debug, Clone)]
 pub struct GroupDef {
-    /// Group identifier
+    /// Group identifier, as used by `#[bench(group = "...")]`
     pub id: &'static str,
-    /// Human-readable description
+    /// Description shown in the HTML report
     pub description: &'static str,
-    /// Tags for filtering
+    /// Tags every benchmark in this group and its child groups carries for `--tag` and `--skip-tag`
     pub tags: &'static [&'static str],
-    /// Parent group (for nested groups)
+    /// Parent group. `--group <parent>` also selects this group.
     pub parent: Option<&'static str>,
 }
 
-/// Chart type for dashboard layout
+/// Chart kind for `#[flux::chart]`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChartType {
-    /// Violin plot
-    Violin,
-    /// Bar chart
+    /// One bar per benchmark
     Bar,
-    /// Scatter plot
-    Scatter,
-    /// Line chart
+    /// One point per benchmark, joined in the listed order
     Line,
-    /// Histogram
-    Histogram,
 }
 
-/// Chart definition for dashboard
+/// Chart definition registered via `#[flux::chart]`.
+///
+/// The HTML report draws it as an inline SVG.
 #[derive(Debug, Clone)]
 pub struct ChartDef {
     /// Chart title
     pub title: &'static str,
-    /// Chart type
+    /// Chart kind
     pub chart_type: ChartType,
-    /// Grid position (row, col)
-    pub position: (u32, u32),
-    /// Items to display (benchmark IDs)
-    pub items: &'static [&'static str],
-    /// Optional target line
+    /// Report metric to plot, e.g. `mean` or `p99`
+    pub metric: &'static str,
+    /// Benchmark IDs to plot, in order
+    pub benchmarks: &'static [&'static str],
+    /// Optional horizontal target line, in the metric's unit
     pub target_line: Option<f64>,
+    /// Optional 1-based grid cell (row, col) in the `#[flux::report]` layout
+    pub position: Option<(u32, u32)>,
 }
 
-/// Report/dashboard definition
+/// Report definition registered via `#[flux::report]`.
+///
+/// The HTML report takes its title and description from it.
+/// Charts sit in a `layout` grid of (rows, cols).
 #[derive(Debug, Clone)]
 pub struct ReportDef {
-    /// Dashboard title
+    /// Report title
     pub title: &'static str,
-    /// Grid layout (rows, cols)
+    /// Report description shown under the title
+    pub description: &'static str,
+    /// Chart grid layout (rows, cols)
     pub layout: (u32, u32),
-    /// Charts in the dashboard
-    pub charts: &'static [ChartDef],
 }
 
 /// Comparison group - groups multiple benchmarks for side-by-side comparison
@@ -160,6 +165,7 @@ pub struct CompareDef {
 inventory::collect!(BenchmarkDef);
 inventory::collect!(GroupDef);
 inventory::collect!(ReportDef);
+inventory::collect!(ChartDef);
 inventory::collect!(CompareDef);
 
 /// Anchor to prevent LTO from stripping inventory entries
@@ -169,5 +175,6 @@ pub static REGISTRY_ANCHOR: fn() = || {
     for _ in inventory::iter::<BenchmarkDef> {}
     for _ in inventory::iter::<GroupDef> {}
     for _ in inventory::iter::<ReportDef> {}
+    for _ in inventory::iter::<ChartDef> {}
     for _ in inventory::iter::<CompareDef> {}
 };

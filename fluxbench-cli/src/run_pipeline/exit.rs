@@ -2,8 +2,8 @@
 //!
 //! - A crash always fails the run.
 //! - A critical verification failure fails it when `ci.fail_on_critical` is on.
-//! - A regression on a `severity = "critical"` benchmark fails it when `ci.fail_on_critical` is on.
-//! - Other regressions print warnings and do not fail.
+//! - A regression or `failed` status on a `severity = "critical"` benchmark fails it when `ci.fail_on_critical` is on.
+//! - Other regressions and failed benchmarks print warnings and do not fail.
 
 use fluxbench_core::Severity;
 use fluxbench_logic::VerificationSummary;
@@ -36,6 +36,28 @@ pub(crate) fn ci_outcome(
         .count();
     if crashed > 0 {
         errors.push(format!("{crashed} benchmark(s) crashed during execution"));
+    }
+
+    for result in report
+        .results
+        .iter()
+        .filter(|r| r.status == BenchmarkStatus::Failed)
+    {
+        let reason = result
+            .failure
+            .as_ref()
+            .map(|f| format!("{}: {}", f.kind, f.message))
+            .unwrap_or_else(|| "no failure details".to_string());
+        let detail = format!("benchmark {} failed ({reason})", result.id);
+        match (result.severity, fail_on_critical) {
+            (Severity::Critical, true) => errors.push(format!("critical {detail}")),
+            (Severity::Critical, false) => {
+                warnings.push(format!("critical {detail}; ci.fail_on_critical is off"))
+            }
+            (Severity::Warning, _) | (Severity::Info, _) => {
+                warnings.push(format!("{detail}; not critical, so the run does not fail"))
+            }
+        }
     }
 
     if verification.should_fail_ci() {
@@ -173,6 +195,33 @@ mod tests {
         let outcome = ci_outcome(&report, &clean(), false);
         assert_eq!(outcome.exit_code, 1);
         assert!(outcome.errors[0].contains("crashed"));
+    }
+
+    #[test]
+    fn failed_benchmark_follows_severity() {
+        use fluxbench_report::FailureInfo;
+        let failed = |severity: Severity| {
+            let mut report = report_with(severity, None);
+            report.results[0].status = BenchmarkStatus::Failed;
+            report.results[0].failure = Some(FailureInfo {
+                kind: "budget".to_string(),
+                message: "mean 2 us exceeds the budget of 1 us.".to_string(),
+                backtrace: None,
+                signal: None,
+            });
+            report
+        };
+        let outcome = ci_outcome(&failed(Severity::Critical), &clean(), true);
+        assert_eq!(outcome.exit_code, 1);
+        assert!(outcome.errors[0].contains("critical benchmark b failed (budget:"));
+
+        let outcome = ci_outcome(&failed(Severity::Critical), &clean(), false);
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(outcome.warnings.len(), 1);
+
+        let outcome = ci_outcome(&failed(Severity::Warning), &clean(), true);
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.warnings[0].contains("not critical"));
     }
 
     #[test]

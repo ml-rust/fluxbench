@@ -2,30 +2,32 @@
 
 use super::execute::execute;
 use super::finish::finish;
+use super::output::emit_empty_report;
 use crate::baseline::{load_baseline, resolve_baseline_path};
-use crate::selection::{report_empty_selection, select_benchmarks};
+use crate::selection::Selection;
 use crate::{Cli, FluxConfig};
-use fluxbench_report::{OutputFormat, Report};
+use fluxbench_report::{HtmlOptions, OutputFormat, Report};
 
 /// Run benchmarks. `--baseline` adds a comparison.
 ///
 /// A missing baseline file prints a warning, so a first CI run passes.
 /// An unreadable or invalid baseline file is an error.
+/// An empty selection writes an empty report in non-human formats and exits 0.
 pub(crate) fn run_benchmarks(
     cli: &Cli,
     config: &FluxConfig,
     format: OutputFormat,
     jobs: usize,
+    selection: &Selection,
+    html: &HtmlOptions,
 ) -> anyhow::Result<()> {
-    let (all, benchmarks) = select_benchmarks(cli);
-    if benchmarks.is_empty() {
-        report_empty_selection(cli, &all);
-        return Ok(());
+    if selection.selected.is_empty() {
+        return emit_empty_report(cli, config, format, html);
     }
 
     let baseline = optional_baseline(cli, config)?;
-    let execution = execute(cli, config, &benchmarks, jobs);
-    finish(cli, config, format, execution, baseline.as_ref())
+    let execution = execute(cli, config, &selection.selected, jobs)?;
+    finish(cli, config, format, html, execution, baseline.as_ref())
 }
 
 /// Load the `--baseline` file when the flag is set and the file exists.

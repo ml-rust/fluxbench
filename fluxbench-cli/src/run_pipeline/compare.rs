@@ -2,12 +2,11 @@
 
 use super::execute::execute;
 use super::finish::finish;
-use crate::baseline::{
-    check_baseline_commit, configured_or_default, load_baseline, resolve_git_ref,
-};
-use crate::selection::{report_empty_selection, select_benchmarks};
+use super::output::emit_empty_report;
+use crate::baseline::{check_baseline_commit, load_baseline, resolve_git_ref};
+use crate::selection::Selection;
 use crate::{Cli, FluxConfig};
-use fluxbench_report::OutputFormat;
+use fluxbench_report::{HtmlOptions, OutputFormat};
 
 /// Compare the current tree against the baseline saved at `git_ref`.
 ///
@@ -19,12 +18,13 @@ pub(crate) fn compare_benchmarks(
     git_ref: &str,
     format: OutputFormat,
     jobs: usize,
+    selection: &Selection,
+    html: &HtmlOptions,
 ) -> anyhow::Result<()> {
-    let path = cli
-        .baseline
-        .clone()
-        .flatten()
-        .unwrap_or_else(|| configured_or_default(config));
+    let path = match cli.baseline.clone().flatten() {
+        Some(path) => config.output.resolve_baseline(&path),
+        None => config.output.baseline_file(),
+    };
 
     if !path.exists() {
         anyhow::bail!(
@@ -40,12 +40,10 @@ pub(crate) fn compare_benchmarks(
     eprintln!("Comparing against baseline: {}", path.display());
     eprintln!("Git ref: {} ({})\n", git_ref, resolved);
 
-    let (all, benchmarks) = select_benchmarks(cli);
-    if benchmarks.is_empty() {
-        report_empty_selection(cli, &all);
-        return Ok(());
+    if selection.selected.is_empty() {
+        return emit_empty_report(cli, config, format, html);
     }
 
-    let execution = execute(cli, config, &benchmarks, jobs);
-    finish(cli, config, format, execution, Some(&baseline))
+    let execution = execute(cli, config, &selection.selected, jobs)?;
+    finish(cli, config, format, html, execution, Some(&baseline))
 }

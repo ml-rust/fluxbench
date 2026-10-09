@@ -1,5 +1,6 @@
 //! Report fixtures for unit tests.
 
+use fluxbench_core::BenchmarkDef;
 use fluxbench_report::{
     BenchmarkMetrics, BenchmarkReportResult, BenchmarkStatus, Report, ReportConfig, ReportMeta,
     ReportSummary, SystemInfo,
@@ -80,6 +81,31 @@ pub(crate) fn dummy_result(id: &str, mean: f64, threshold: f64) -> BenchmarkRepo
         comparison: None,
         failure: None,
         samples: None,
+    }
+}
+
+/// Benchmark definition with every option unset, in group `default`.
+pub(crate) fn bench_def(id: &'static str) -> BenchmarkDef {
+    BenchmarkDef {
+        id,
+        name: id,
+        group: "default",
+        severity: fluxbench_core::Severity::Info,
+        threshold: 0.0,
+        budget_ns: None,
+        tags: &[],
+        runner_fn: |_| {},
+        file: "",
+        line: 0,
+        module_path: "",
+        warmup_ns: None,
+        measurement_ns: None,
+        samples: None,
+        sample_count: None,
+        iters_per_sample: None,
+        min_iterations: None,
+        max_iterations: None,
+        depends_on: &[],
     }
 }
 
