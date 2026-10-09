@@ -526,7 +526,8 @@ struct StringComparison;
 ```
 
 Generates a table showing speedup vs baseline for each benchmark.
-`metric` is one of `mean` (default), `median`, `min`, `max`, `p50`, `p90`, `p95`, `p99`, `p999`. Any other value is a compile error.
+`metric` is one of `mean` (default), `median`, `min`, `max`, `p50`, `p90`, `p95`, `p99`, `p999`, `throughput_bytes`, `throughput_elements`. Any other value is a compile error.
+`throughput_bytes` and `throughput_elements` are rates, so a higher value is faster and speedup is value over baseline. A benchmark without that throughput kind has no entry. A baseline without it drops the comparison.
 
 ### Series Comparison
 
@@ -582,6 +583,7 @@ struct Scale1000;
 - Each `#[compare]` needs at least 2 benchmarks with data. Otherwise it produces no output.
 - `x` places the point on the x axis. The chart sorts points by `x` as a number.
 - `series` names the lines by position. Without it, the lines use the benchmark IDs of the first `#[compare]`.
+- The HTML report draws each group as an inline SVG under `Comparison Series`. Numeric `x` values draw one line per series. Other `x` values draw grouped bars. A value of 0 shows no point.
 
 ## CLI Usage
 
@@ -848,7 +850,8 @@ struct MeanChart;
 ```
 
 - `layout`: `"grid(rows, cols)"` or `"RxC"`, each at least 1. Default `grid(2, 2)`. A bad value is a compile error.
-- `metric`: `mean`, `median`, `min`, `max`, `p50`, `p90`, `p95`, `p99`, `p999`, `std_dev`, `throughput`, `alloc_bytes`, `alloc_count`, `mean_cycles`.
+- `metric`: `mean`, `median`, `min`, `max`, `p50`, `p90`, `p95`, `p99`, `p999`, `std_dev`, `throughput`, `throughput_bytes`, `throughput_elements`, `alloc_bytes`, `alloc_count`, `mean_cycles`.
+- `throughput_bytes` and `throughput_elements` need a benchmark with that throughput kind. Without it the slot shows `(no data)`.
 - A benchmark without data, e.g. filtered out or crashed, shows `(no data)` under its slot.
 - Startup errors: more than one `#[report]`, an unknown chart metric or benchmark ID, a cell outside the layout, or two charts in one cell.
 

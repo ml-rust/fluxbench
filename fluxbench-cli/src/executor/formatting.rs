@@ -12,7 +12,7 @@
 
 use fluxbench_report::{
     BenchmarkReportResult, BenchmarkStatus, Report, format_byte_rate, format_duration,
-    format_element_rate,
+    format_element_rate, format_metric,
 };
 
 /// Format a report for human-readable terminal display
@@ -164,7 +164,7 @@ pub fn format_human_output(report: &Report) -> String {
             output.push_str(&format!(
                 "  {:<width$}  {:>12}  {:>10}{}\n",
                 entry.benchmark_id,
-                format_duration(entry.value),
+                format_metric(&cmp.metric, entry.value),
                 speedup_str,
                 baseline_marker,
                 width = max_name_len

@@ -30,7 +30,7 @@ pub use html::{
     HtmlChart, HtmlGroup, HtmlOptions, HtmlTheme, generate_html_report, generate_html_report_with,
 };
 pub use json::{ReportSchema, generate_json_report};
-pub use metric::{CHART_METRICS, metric_value};
+pub use metric::{CHART_METRICS, format_metric, metric_value};
 pub use rate::{
     format_byte_rate, format_element_rate, format_work_rate, scale_byte_rate, scale_element_rate,
 };

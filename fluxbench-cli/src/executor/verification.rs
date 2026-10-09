@@ -29,7 +29,7 @@
 
 use super::execution::BenchExecutionResult;
 use super::throughput::work_rates;
-use fluxbench_core::CompareDef;
+use fluxbench_core::{CompareDef, Throughput};
 use fluxbench_logic::{
     MetricContext, SyntheticDef, SyntheticResult, Verification, VerificationContext,
     VerificationResult, VerifyDef, compute_synthetics, run_verifications,
@@ -64,6 +64,16 @@ pub fn execute_verifications(
         .filter_map(|(id, s)| s.as_ref().map(|s| (id.as_str(), s)))
         .collect();
 
+    // Throughput per benchmark, for the work-rate compare metrics
+    let throughput_lookup: std::collections::HashMap<_, _> = results
+        .iter()
+        .map(|r| (r.benchmark_id.as_str(), r.throughput))
+        .collect();
+    let metric_of = |id: &str, stats: &SummaryStatistics, metric: &str| {
+        let throughput = throughput_lookup.get(id).copied().flatten();
+        get_metric_value(stats, throughput, metric)
+    };
+
     // Process comparison groups
     let mut comparison_results: Vec<ComparisonResult> = Vec::new();
     let mut grouped_comparisons: std::collections::BTreeMap<
@@ -81,7 +91,7 @@ pub fn execute_verifications(
             None => continue,
         };
         // `#[compare]` checks the metric name at compile time.
-        let Some(baseline_value) = get_metric_value(baseline_stats, cmp.metric) else {
+        let Some(baseline_value) = metric_of(baseline_id, baseline_stats, cmp.metric) else {
             continue;
         };
 
@@ -91,12 +101,8 @@ pub fn execute_verifications(
             .iter()
             .filter_map(|bench_id| {
                 let bench_stats = stats_lookup.get(bench_id)?;
-                let value = get_metric_value(bench_stats, cmp.metric)?;
-                let speedup = if value > 0.0 {
-                    baseline_value / value
-                } else {
-                    0.0
-                };
+                let value = metric_of(bench_id, bench_stats, cmp.metric)?;
+                let speedup = speedup_of(cmp.metric, baseline_value, value);
 
                 Some(ComparisonEntry {
                     benchmark_id: bench_id.to_string(),
@@ -256,8 +262,25 @@ pub fn execute_verifications(
     )
 }
 
+/// Speedup of `value` over `baseline`. Times are lower-is-better and rates are higher-is-better.
+fn speedup_of(metric: &str, baseline: f64, value: f64) -> f64 {
+    let is_rate = matches!(metric, "throughput_bytes" | "throughput_elements");
+    let (num, den) = if is_rate {
+        (value, baseline)
+    } else {
+        (baseline, value)
+    };
+    if den > 0.0 { num / den } else { 0.0 }
+}
+
 /// Get metric value from stats based on metric name. Matches `COMPARE_METRICS` in fluxbench-macros.
-fn get_metric_value(stats: &SummaryStatistics, metric: &str) -> Option<f64> {
+///
+/// `throughput_bytes` and `throughput_elements` are `None` unless `throughput` has that kind.
+fn get_metric_value(
+    stats: &SummaryStatistics,
+    throughput: Option<Throughput>,
+    metric: &str,
+) -> Option<f64> {
     match metric {
         "mean" => Some(stats.mean),
         "median" => Some(stats.median),
@@ -268,6 +291,8 @@ fn get_metric_value(stats: &SummaryStatistics, metric: &str) -> Option<f64> {
         "p95" => Some(stats.p95),
         "p99" => Some(stats.p99),
         "p999" => Some(stats.p999),
+        "throughput_bytes" => work_rates(throughput, stats.mean).0,
+        "throughput_elements" => work_rates(throughput, stats.mean).1,
         _ => None,
     }
 }
@@ -398,6 +423,34 @@ mod tests {
         assert_eq!(context.get("parse_throughput_bytes"), None);
         assert_eq!(context.get("plain_throughput_bytes"), None);
         assert_eq!(context.get("plain_throughput"), Some(10_000_000.0));
+    }
+
+    #[test]
+    fn rates_speed_up_when_higher() {
+        assert_eq!(speedup_of("mean", 100.0, 50.0), 2.0);
+        assert_eq!(speedup_of("throughput_bytes", 100.0, 200.0), 2.0);
+        assert_eq!(speedup_of("throughput_elements", 0.0, 200.0), 0.0);
+        assert_eq!(speedup_of("mean", 100.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn compare_metrics_read_work_rates() {
+        let results = [
+            passed("copy", Some(Throughput::Bytes(1024))),
+            passed("parse", Some(Throughput::Elements(10))),
+            passed("plain", None),
+        ];
+        let stats = stats_of(&results);
+        let value = |i: usize, metric: &str| {
+            let s = stats[i].1.as_ref()?;
+            get_metric_value(s, results[i].throughput, metric)
+        };
+        assert_eq!(value(0, "throughput_bytes"), Some(10_240_000_000.0));
+        assert_eq!(value(0, "throughput_elements"), None);
+        assert_eq!(value(1, "throughput_elements"), Some(100_000_000.0));
+        assert_eq!(value(1, "throughput_bytes"), None);
+        assert_eq!(value(2, "throughput_bytes"), None);
+        assert_eq!(value(2, "mean"), Some(100.0));
     }
 
     #[test]

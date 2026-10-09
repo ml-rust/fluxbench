@@ -190,6 +190,13 @@ mod tests {
                 .contains("unknown metric `fastest`")
         );
 
+        for metric in ["throughput_bytes", "throughput_elements"] {
+            assert!(
+                build(&[&r], &[&chart("t", metric, None)]).is_ok(),
+                "{metric}"
+            );
+        }
+
         let mut unknown_bench = chart("u", "mean", None);
         unknown_bench.benchmarks = &["nope"];
         assert!(

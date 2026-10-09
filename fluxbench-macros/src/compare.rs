@@ -7,7 +7,17 @@ use syn::ItemStruct;
 
 /// Metrics a comparison can use. Matches `get_metric_value` in fluxbench-cli.
 const COMPARE_METRICS: &[&str] = &[
-    "mean", "median", "min", "max", "p50", "p90", "p95", "p99", "p999",
+    "mean",
+    "median",
+    "min",
+    "max",
+    "p50",
+    "p90",
+    "p95",
+    "p99",
+    "p999",
+    "throughput_bytes",
+    "throughput_elements",
 ];
 
 pub fn compare_impl(args: TokenStream2, input: ItemStruct) -> Result<TokenStream2, syn::Error> {
@@ -101,5 +111,16 @@ mod tests {
             .map(|e| e.to_string())
             .unwrap_or_default();
         assert!(err.contains("unknown compare metric `fastest`"), "{err}");
+    }
+
+    #[test]
+    fn compare_accepts_work_rate_metrics() {
+        for metric in ["throughput_bytes", "throughput_elements"] {
+            let item: ItemStruct = syn::parse_quote!(
+                struct Cmp;
+            );
+            let args = quote!(benchmarks = ["a", "b"], metric = #metric);
+            assert!(compare_impl(args, item).is_ok(), "{metric}");
+        }
     }
 }
