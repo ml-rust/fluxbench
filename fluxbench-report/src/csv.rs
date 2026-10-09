@@ -294,10 +294,11 @@ mod tests {
             .iter()
             .position(|c| c.name == "failure_kind")
             .unwrap();
-        assert_eq!(records[1][kind], "assertion");
-        assert_eq!(records[1][kind + 1], "left != right");
-        assert_eq!(records[2][kind], "signal");
-        assert_eq!(records[3][kind], "");
+        // Row 0 is the header. Rows 1 to 4 are passed, failed, crashed, skipped.
+        assert_eq!(records[1][kind], "");
+        assert_eq!(records[2][kind], "assertion");
+        assert_eq!(records[2][kind + 1], "left != right");
+        assert_eq!(records[3][kind], "signal");
         assert_eq!(records[4][kind], "");
     }
 
