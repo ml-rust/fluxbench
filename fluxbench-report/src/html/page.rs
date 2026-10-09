@@ -1,6 +1,6 @@
-//! HTML page assembly: header, summary, charts, and per-group result tables.
+//! HTML page assembly: header, summary, charts, compare series, and per-group result tables.
 
-use super::chart::render_chart;
+use super::chart::{render_chart, render_series_chart};
 use super::escape::escape;
 use super::options::{HtmlGroup, HtmlOptions};
 use super::style::{BASE_CSS, theme_vars};
@@ -38,6 +38,9 @@ pub fn generate_html_report_with(report: &Report, options: &HtmlOptions) -> Stri
     write_summary(&mut html, report);
     if !options.charts.is_empty() {
         write_charts(&mut html, report, options);
+    }
+    if !report.comparison_series.is_empty() {
+        write_series(&mut html, report, options);
     }
     write_results(&mut html, report, &options.groups);
     html.push_str("  </main>\n");
@@ -99,6 +102,24 @@ fn write_charts(html: &mut String, report: &Report, options: &HtmlOptions) {
             escape(&chart.title),
             escape(&chart.metric),
             render_chart(chart, report, options.chart_width, options.chart_height)
+        );
+    }
+    html.push_str("      </div>\n    </section>\n");
+}
+
+/// One chart per `#[compare]` group that has series data.
+fn write_series(html: &mut String, report: &Report, options: &HtmlOptions) {
+    html.push_str(
+        "    <section id=\"series\">\n      <h2>Comparison Series</h2>\n      <div class=\"chart-grid\" style=\"grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));\">\n",
+    );
+    for series in &report.comparison_series {
+        let _ = writeln!(
+            html,
+            "        <figure class=\"chart\">\n          <figcaption>{} ({}, group {})</figcaption>\n{}        </figure>",
+            escape(&series.title),
+            escape(&series.metric),
+            escape(&series.group),
+            render_series_chart(series, options.chart_width, options.chart_height)
         );
     }
     html.push_str("      </div>\n    </section>\n");
@@ -319,6 +340,28 @@ mod tests {
         assert_eq!(html.matches("<rect class=\"bar\"").count(), 1);
         assert!(html.contains("missing (no data)"));
         assert!(html.contains("class=\"target\""));
+    }
+
+    #[test]
+    fn compare_series_render_as_inline_svg() {
+        let mut report = report_json();
+        report.comparison_series.push(crate::ComparisonSeries {
+            group: "<scale>".to_string(),
+            title: "Scaling & more".to_string(),
+            x_values: vec!["1".to_string(), "10".to_string(), "100".to_string()],
+            series_names: vec!["a".to_string()],
+            series_data: vec![vec![1.0, 2.0, 3.0]],
+            metric: "mean".to_string(),
+        });
+        let html = generate_html_report_with(&report, &options());
+        assert!(html.contains("<section id=\"series\">"));
+        assert!(html.contains("Scaling &amp; more (mean, group &lt;scale&gt;)"));
+        let section = &html[html.find("<section id=\"series\">").unwrap()..];
+        let section = &section[..section.find("</section>").unwrap()];
+        assert!(section.contains("<svg "));
+        assert_eq!(section.matches("<circle").count(), 3);
+        assert!(!html.contains("<scale>"));
+        assert!(!generate_html_report_with(&report_json(), &options()).contains("id=\"series\""));
     }
 
     #[test]

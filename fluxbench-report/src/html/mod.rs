@@ -2,7 +2,7 @@
 //!
 //! - `options`: title, theme, groups, and charts for the page
 //! - `page`: page assembly
-//! - `chart`: SVG bar and line charts
+//! - `chart`: SVG bar and line charts, for chart defs and `#[compare]` series
 //! - `style`: embedded CSS
 //! - `escape`: HTML escaping
 

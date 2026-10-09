@@ -15,6 +15,7 @@ pub(crate) fn theme_vars(theme: HtmlTheme) -> &'static str {
       --border: #e5e7eb;
       --accent: #3b82f6;
       --target: #dc2626;
+      --series-1: #f59e0b; --series-2: #10b981; --series-3: #8b5cf6; --series-4: #ec4899; --series-5: #64748b;
       --passed-bg: #dcfce7; --passed-fg: #166534;
       --failed-bg: #fee2e2; --failed-fg: #991b1b;
       --crashed-bg: #fef3c7; --crashed-fg: #92400e;
@@ -32,6 +33,7 @@ pub(crate) fn theme_vars(theme: HtmlTheme) -> &'static str {
       --border: #374151;
       --accent: #60a5fa;
       --target: #f87171;
+      --series-1: #fbbf24; --series-2: #34d399; --series-3: #a78bfa; --series-4: #f472b6; --series-5: #94a3b8;
       --passed-bg: #14532d; --passed-fg: #bbf7d0;
       --failed-bg: #7f1d1d; --failed-fg: #fecaca;
       --crashed-bg: #78350f; --crashed-fg: #fde68a;
@@ -71,6 +73,17 @@ pub(crate) const BASE_CSS: &str = r#"
     .chart-svg .bar { fill: var(--accent); }
     .chart-svg .line { fill: none; stroke: var(--accent); stroke-width: 2; }
     .chart-svg .point { fill: var(--accent); }
+    .chart-svg .bar.s1, .chart-svg .point.s1 { fill: var(--series-1); }
+    .chart-svg .line.s1 { stroke: var(--series-1); }
+    .chart-svg .bar.s2, .chart-svg .point.s2 { fill: var(--series-2); }
+    .chart-svg .line.s2 { stroke: var(--series-2); }
+    .chart-svg .bar.s3, .chart-svg .point.s3 { fill: var(--series-3); }
+    .chart-svg .line.s3 { stroke: var(--series-3); }
+    .chart-svg .bar.s4, .chart-svg .point.s4 { fill: var(--series-4); }
+    .chart-svg .line.s4 { stroke: var(--series-4); }
+    .chart-svg .bar.s5, .chart-svg .point.s5 { fill: var(--series-5); }
+    .chart-svg .line.s5 { stroke: var(--series-5); }
+    .chart-svg .legend { fill: var(--text-primary); font-size: 12px; }
     .chart-svg .target { stroke: var(--target); stroke-dasharray: 6 4; stroke-width: 2; }
     .chart-svg .target-label { fill: var(--target); font-size: 12px; }
     footer { margin-top: 40px; color: var(--text-muted); font-size: 12px; }
