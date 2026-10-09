@@ -74,9 +74,13 @@ pub fn build_report(
                 };
                 let bootstrap_result = compute_bootstrap(&result.samples, &bootstrap_config);
 
+                // No CI when the bootstrap is skipped (0 iterations) or errors.
                 let (ci_lower, ci_upper) = match bootstrap_result {
-                    Ok(br) => (br.confidence_interval.lower, br.confidence_interval.upper),
-                    Err(_) => (s.mean, s.mean), // Fallback to point estimate
+                    Ok(br) => (
+                        Some(br.confidence_interval.lower),
+                        Some(br.confidence_interval.upper),
+                    ),
+                    Err(_) => (None, None),
                 };
 
                 let throughput = if s.mean > 0.0 {

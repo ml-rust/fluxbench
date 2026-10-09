@@ -764,8 +764,16 @@ fn apply_baseline_comparison(
                 0.0
             };
 
-            let ci_non_overlap = metrics.ci_upper_ns < baseline_metrics.ci_lower_ns
-                || metrics.ci_lower_ns > baseline_metrics.ci_upper_ns;
+            // Without both intervals, overlap is unknown: treat as overlapping.
+            let ci_non_overlap = match (
+                metrics.ci_lower_ns,
+                metrics.ci_upper_ns,
+                baseline_metrics.ci_lower_ns,
+                baseline_metrics.ci_upper_ns,
+            ) {
+                (Some(lo), Some(hi), Some(base_lo), Some(base_hi)) => hi < base_lo || lo > base_hi,
+                _ => false,
+            };
             let is_significant = relative_change.abs() > effective_threshold && ci_non_overlap;
 
             if relative_change > effective_threshold {
@@ -1046,8 +1054,8 @@ mod tests {
             p999_ns: mean * 1.1,
             skewness: 0.0,
             kurtosis: 3.0,
-            ci_lower_ns: mean * 0.98,
-            ci_upper_ns: mean * 1.02,
+            ci_lower_ns: Some(mean * 0.98),
+            ci_upper_ns: Some(mean * 1.02),
             ci_level: 0.95,
             throughput_ops_sec: None,
             alloc_bytes: 0,

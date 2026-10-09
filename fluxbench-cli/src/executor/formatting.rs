@@ -68,11 +68,13 @@ pub fn format_human_output(report: &Report) -> String {
                     format_duration(metrics.p95_ns),
                     format_duration(metrics.p99_ns),
                 ));
-                output.push_str(&format!(
-                    "      95% CI: [{}, {}]\n",
-                    format_duration(metrics.ci_lower_ns),
-                    format_duration(metrics.ci_upper_ns),
-                ));
+                if let (Some(lower), Some(upper)) = (metrics.ci_lower_ns, metrics.ci_upper_ns) {
+                    output.push_str(&format!(
+                        "      95% CI: [{}, {}]\n",
+                        format_duration(lower),
+                        format_duration(upper),
+                    ));
+                }
                 if let Some(throughput) = metrics.throughput_ops_sec {
                     output.push_str(&format!("      throughput: {:.2} ops/sec\n", throughput));
                 }

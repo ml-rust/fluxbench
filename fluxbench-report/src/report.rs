@@ -196,10 +196,12 @@ pub struct BenchmarkMetrics {
     pub skewness: f64,
     /// Distribution kurtosis
     pub kurtosis: f64,
-    /// Confidence interval lower bound in nanoseconds
-    pub ci_lower_ns: f64,
-    /// Confidence interval upper bound in nanoseconds
-    pub ci_upper_ns: f64,
+    /// Confidence interval lower bound in nanoseconds (`None` when the bootstrap is skipped)
+    #[serde(default)]
+    pub ci_lower_ns: Option<f64>,
+    /// Confidence interval upper bound in nanoseconds (`None` when the bootstrap is skipped)
+    #[serde(default)]
+    pub ci_upper_ns: Option<f64>,
     /// Confidence level used for interval (e.g., 0.95)
     pub ci_level: f64,
     /// Throughput in operations per second (if applicable)
@@ -236,8 +238,8 @@ impl From<&SummaryStatistics> for BenchmarkMetrics {
             p999_ns: stats.p999,
             skewness: stats.skewness,
             kurtosis: stats.kurtosis,
-            ci_lower_ns: 0.0, // Filled by bootstrap
-            ci_upper_ns: 0.0,
+            ci_lower_ns: None, // Filled by bootstrap
+            ci_upper_ns: None,
             ci_level: 0.95,
             throughput_ops_sec: None,
             alloc_bytes: 0,
