@@ -73,9 +73,20 @@ pub fn reset_allocation_counter() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// The counters are process-wide. Tests that write them take this lock.
+    static COUNTER_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_counters() -> std::sync::MutexGuard<'static, ()> {
+        COUNTER_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[test]
     fn test_reset_allocation_counter() {
+        let _guard = lock_counters();
         // Set some values
         ALLOCATED_BYTES.store(1000, std::sync::atomic::Ordering::Relaxed);
         ALLOCATION_COUNT.store(5, std::sync::atomic::Ordering::Relaxed);
@@ -90,6 +101,7 @@ mod tests {
 
     #[test]
     fn test_current_allocation_reads_atomics() {
+        let _guard = lock_counters();
         ALLOCATED_BYTES.store(2048, std::sync::atomic::Ordering::Relaxed);
         ALLOCATION_COUNT.store(10, std::sync::atomic::Ordering::Relaxed);
 
