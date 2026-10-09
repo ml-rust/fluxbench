@@ -206,8 +206,13 @@ fn test_outlier_preserves_tail() {
 
     let summary = compute_summary(&samples, OutlierMethod::Iqr { k: 3 });
 
-    // Mean should be from cleaned data (exclude outliers)
-    assert!(summary.mean < 200.0);
+    // Mean uses every sample, so the outliers pull it up
+    let raw_mean = samples.iter().sum::<f64>() / samples.len() as f64;
+    assert!((summary.mean - raw_mean).abs() < 1e-9);
+
+    // Trimmed mean drops the outliers
+    assert!(summary.trimmed_mean < 110.0);
+    assert!(summary.trimmed_mean < summary.mean);
 
     // But max should preserve the outlier
     assert_eq!(summary.max, 1000.0);

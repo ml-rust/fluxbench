@@ -124,7 +124,7 @@ pub fn compare_distributions(
     let baseline_stats = compute_summary(baseline, config.outlier_method);
     let candidate_stats = compute_summary(candidate, config.outlier_method);
 
-    // Compute observed difference
+    // Summary means are raw-sample means: the same estimator the bootstrap below resamples.
     let observed_diff = candidate_stats.mean - baseline_stats.mean;
     let relative_change = if baseline_stats.mean > 0.0 {
         (observed_diff / baseline_stats.mean) * 100.0
@@ -295,6 +295,40 @@ mod tests {
         assert!(result.relative_change < -40.0); // ~50% improvement
         assert!(result.is_significant);
         assert_eq!(result.effect_interpretation, EffectInterpretation::Large);
+    }
+
+    #[test]
+    fn test_comparison_uses_one_estimator() {
+        // The baseline spike is an IQR outlier. Every field must still use raw means.
+        let baseline = vec![
+            100.0, 101.0, 99.0, 100.0, 102.0, 98.0, 100.0, 101.0, 99.0, 400.0,
+        ];
+        let candidate = vec![
+            130.0, 131.0, 129.0, 130.0, 132.0, 128.0, 130.0, 131.0, 129.0, 130.0,
+        ];
+        let config = ComparisonConfig {
+            bootstrap_iterations: 4000,
+            ..Default::default()
+        };
+
+        let result = compare_distributions(&baseline, &candidate, &config).unwrap();
+        assert!(result.baseline_stats.outlier_count > 0);
+
+        let raw_baseline = baseline.iter().sum::<f64>() / baseline.len() as f64;
+        let raw_candidate = candidate.iter().sum::<f64>() / candidate.len() as f64;
+        let raw_diff = raw_candidate - raw_baseline;
+        assert!((result.absolute_change - raw_diff).abs() < 1e-9);
+        assert!((result.relative_change - raw_diff / raw_baseline * 100.0).abs() < 1e-9);
+        assert!(
+            result.difference_ci_lower <= raw_diff && raw_diff <= result.difference_ci_upper,
+            "diff {raw_diff} outside [{}, {}]",
+            result.difference_ci_lower,
+            result.difference_ci_upper
+        );
+
+        // Raw means are both 130.0. The trimmed baseline mean of 100.0 must not leak in.
+        assert!(result.relative_change.abs() < 1.0);
+        assert!(!result.is_significant);
     }
 
     #[test]

@@ -113,6 +113,7 @@ mod tests {
         BenchmarkMetrics {
             samples: 100,
             mean_ns,
+            trimmed_mean_ns: Some(mean_ns),
             median_ns: mean_ns * 0.99,
             std_dev_ns: mean_ns * 0.02,
             min_ns: mean_ns * 0.9,

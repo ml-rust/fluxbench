@@ -1,8 +1,8 @@
 //! Summary Statistics
 //!
-//! Computes comprehensive summary statistics following the critical design decision:
-//! - Mean, median, stddev computed from CLEANED data (outliers removed)
-//! - Min, max, percentiles computed from ALL data (outliers preserved)
+//! Every statistic comes from the raw samples, outliers included.
+//! The bootstrap CI estimates the raw mean, so mean and CI share one estimator.
+//! Outlier detection still runs. It reports counts, fences, and a separate trimmed mean.
 
 use crate::outliers::{OutlierAnalysis, OutlierMethod, detect_outliers};
 use crate::percentiles::compute_percentile;
@@ -10,32 +10,34 @@ use crate::percentiles::compute_percentile;
 /// Comprehensive summary statistics
 #[derive(Debug, Clone)]
 pub struct SummaryStatistics {
-    /// Mean (computed from cleaned data with outliers removed)
+    /// Mean of all samples, outliers included
     pub mean: f64,
-    /// Median (computed from cleaned data with outliers removed)
+    /// Median of all samples, outliers included
     pub median: f64,
-    /// Standard deviation (computed from cleaned data with outliers removed)
+    /// Sample standard deviation of all samples, outliers included
     pub std_dev: f64,
+    /// Mean with detected outliers removed. Equals `mean` when no outlier is found.
+    pub trimmed_mean: f64,
 
-    /// Minimum value (from all data, preserving outliers)
+    /// Minimum value
     pub min: f64,
-    /// Maximum value (from all data, preserving outliers)
+    /// Maximum value
     pub max: f64,
 
-    /// 50th percentile/median (from all data, preserving outliers)
+    /// 50th percentile, equal to `median`
     pub p50: f64,
-    /// 90th percentile (from all data, preserving outliers)
+    /// 90th percentile
     pub p90: f64,
-    /// 95th percentile (from all data, preserving outliers)
+    /// 95th percentile
     pub p95: f64,
-    /// 99th percentile (from all data, preserving outliers)
+    /// 99th percentile
     pub p99: f64,
-    /// 99.9th percentile (from all data, preserving outliers)
+    /// 99.9th percentile
     pub p999: f64,
 
-    /// Skewness of the distribution (from cleaned data)
+    /// Skewness of all samples
     pub skewness: f64,
-    /// Kurtosis of the distribution (from cleaned data)
+    /// Excess kurtosis of all samples
     pub kurtosis: f64,
 
     /// Total number of samples (before outlier removal)
@@ -63,10 +65,11 @@ pub struct CyclesStatistics {
     pub cycles_per_ns: f64,
 }
 
-/// Compute summary statistics with proper separation of cleaned vs raw data
+/// Compute summary statistics from the raw samples.
 ///
-/// Mean/median/stddev are computed from cleaned data (outliers removed), while
-/// percentiles and extremes preserve outliers as they represent important tail behavior.
+/// Mean, median, stddev, percentiles, extremes, and shape use every sample.
+/// They match the estimator that `compute_bootstrap` uses on the same slice.
+/// `outlier_method` drives outlier counts, fences, and `trimmed_mean` only.
 ///
 /// # Examples
 ///
@@ -84,6 +87,7 @@ pub fn compute_summary(samples: &[f64], outlier_method: OutlierMethod) -> Summar
             mean: 0.0,
             median: 0.0,
             std_dev: 0.0,
+            trimmed_mean: 0.0,
             min: 0.0,
             max: 0.0,
             p50: 0.0,
@@ -99,33 +103,27 @@ pub fn compute_summary(samples: &[f64], outlier_method: OutlierMethod) -> Summar
         };
     }
 
-    // Detect outliers
     let analysis = detect_outliers(samples, outlier_method);
-    let cleaned = &analysis.cleaned_samples;
     let all = &analysis.all_samples;
+    let cleaned = &analysis.cleaned_samples;
 
-    // Central tendency from CLEANED data
-    let mean = if cleaned.is_empty() {
+    let mean = all.iter().sum::<f64>() / all.len() as f64;
+    let median = compute_percentile(all, 50.0);
+
+    let std_dev = if all.len() < 2 {
         0.0
+    } else {
+        let variance = all.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (all.len() - 1) as f64;
+        variance.sqrt()
+    };
+
+    // Detection keeps at least one sample in practice. Fall back to the raw mean if not.
+    let trimmed_mean = if cleaned.is_empty() {
+        mean
     } else {
         cleaned.iter().sum::<f64>() / cleaned.len() as f64
     };
 
-    let median = if cleaned.is_empty() {
-        0.0
-    } else {
-        compute_percentile(cleaned, 50.0)
-    };
-
-    let std_dev = if cleaned.len() < 2 {
-        0.0
-    } else {
-        let variance =
-            cleaned.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (cleaned.len() - 1) as f64;
-        variance.sqrt()
-    };
-
-    // Extremes from ALL data
     let min = all
         .iter()
         .cloned()
@@ -137,21 +135,21 @@ pub fn compute_summary(samples: &[f64], outlier_method: OutlierMethod) -> Summar
         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap_or(0.0);
 
-    // Percentiles from ALL data (outliers ARE the tail signal)
-    let p50 = compute_percentile(all, 50.0);
+    // Outliers stay in the tails: they are the tail signal.
+    let p50 = median;
     let p90 = compute_percentile(all, 90.0);
     let p95 = compute_percentile(all, 95.0);
     let p99 = compute_percentile(all, 99.0);
     let p999 = compute_percentile(all, 99.9);
 
-    // Skewness and kurtosis from CLEANED data (Fisher's definitions)
-    let (skewness, kurtosis) = if cleaned.len() < 3 || std_dev < f64::EPSILON {
+    // Fisher's definitions over all samples
+    let (skewness, kurtosis) = if all.len() < 3 || std_dev < f64::EPSILON {
         (0.0, 0.0)
     } else {
-        let n = cleaned.len() as f64;
+        let n = all.len() as f64;
         let mut m3 = 0.0;
         let mut m4 = 0.0;
-        for &x in cleaned.iter() {
+        for &x in all.iter() {
             let d = (x - mean) / std_dev;
             let d2 = d * d;
             m3 += d2 * d;
@@ -164,6 +162,7 @@ pub fn compute_summary(samples: &[f64], outlier_method: OutlierMethod) -> Summar
         mean,
         median,
         std_dev,
+        trimmed_mean,
         min,
         max,
         p50,
@@ -308,8 +307,12 @@ mod tests {
         let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0, 100.0];
         let summary = compute_summary(&samples, OutlierMethod::default());
 
-        // Mean should be from cleaned data (exclude 100.0)
-        assert!(summary.mean < 10.0);
+        // Mean includes the outlier: (1+2+3+4+5+100)/6 = 19.1667
+        assert!((summary.mean - 115.0 / 6.0).abs() < 1e-9);
+        // Trimmed mean drops it
+        assert!((summary.trimmed_mean - 3.0).abs() < 1e-9);
+        // Median and p50 come from the same samples
+        assert_eq!(summary.median, summary.p50);
 
         // Max should be from ALL data (include 100.0)
         assert_eq!(summary.max, 100.0);
@@ -318,6 +321,32 @@ mod tests {
         assert!(summary.p99 > 50.0);
 
         assert_eq!(summary.outlier_count, 1);
+    }
+
+    #[test]
+    fn test_trimmed_mean_equals_mean_without_outliers() {
+        let samples = vec![10.0, 11.0, 12.0, 13.0, 14.0];
+        let summary = compute_summary(&samples, OutlierMethod::default());
+        assert_eq!(summary.outlier_count, 0);
+        assert!((summary.trimmed_mean - summary.mean).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_mean_matches_bootstrap_estimator() {
+        use crate::bootstrap::{BootstrapConfig, compute_bootstrap};
+
+        let samples = vec![10.0, 11.0, 9.0, 10.5, 9.5, 10.0, 11.0, 9.0, 80.0, 10.0];
+        let summary = compute_summary(&samples, OutlierMethod::default());
+        assert!(summary.outlier_count > 0);
+
+        let config = BootstrapConfig {
+            iterations: 2000,
+            ..Default::default()
+        };
+        let boot = compute_bootstrap(&samples, &config).unwrap();
+        assert!((boot.point_estimate - summary.mean).abs() < 1e-9);
+        let ci = boot.confidence_interval;
+        assert!(ci.lower <= summary.mean && summary.mean <= ci.upper);
     }
 
     #[test]

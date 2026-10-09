@@ -4,7 +4,7 @@
 //! methods for computing confidence intervals.
 
 use crate::{BCA_THRESHOLD, DEFAULT_BOOTSTRAP_ITERATIONS, DEFAULT_CONFIDENCE_LEVEL};
-use rand::RngExt;
+use rand::{Rng, RngExt};
 use rayon::prelude::*;
 use thiserror::Error;
 
@@ -152,7 +152,7 @@ pub fn compute_bootstrap(
     let bootstrap_means = if config.parallel {
         generate_bootstrap_means_parallel(samples, config.iterations)
     } else {
-        generate_bootstrap_means_serial(samples, config.iterations)
+        generate_bootstrap_means_serial(samples, config.iterations, &mut rand::rng())
     };
 
     // Sort bootstrap means once (shared by both CI methods and avoids per-call allocation)
@@ -218,15 +218,20 @@ fn generate_bootstrap_means_parallel(samples: &[f64], iterations: usize) -> Vec<
         .collect()
 }
 
-/// Generate bootstrap means serially (for testing or small samples).
+/// Generate bootstrap means serially from the given generator.
+///
+/// A seeded generator gives reproducible means.
 ///
 /// # Panics
 ///
 /// Panics if `samples` is empty. Callers must validate this before calling.
-fn generate_bootstrap_means_serial(samples: &[f64], iterations: usize) -> Vec<f64> {
+fn generate_bootstrap_means_serial<R: Rng + ?Sized>(
+    samples: &[f64],
+    iterations: usize,
+    rng: &mut R,
+) -> Vec<f64> {
     assert!(!samples.is_empty(), "samples must not be empty");
     let n = samples.len();
-    let mut rng = rand::rng();
     (0..iterations)
         .map(|_| {
             let mut sum = 0.0;
@@ -328,10 +333,16 @@ fn mean(samples: &[f64]) -> f64 {
     samples.iter().sum::<f64>() / samples.len() as f64
 }
 
-/// Standard normal quantile (inverse CDF)
+/// Standard normal quantile (inverse CDF).
+///
+/// Uses Wichura's algorithm AS241 (PPND16), accurate to about 1e-16.
+/// Returns negative infinity for `p <= 0` and positive infinity for `p >= 1`.
+// The coefficients are the published AS241 values, so they keep every digit.
+#[allow(clippy::excessive_precision)]
 fn normal_quantile(p: f64) -> f64 {
-    // Rational approximation for the normal quantile function
-    // Abramowitz and Stegun approximation (26.2.23)
+    if p.is_nan() {
+        return f64::NAN;
+    }
     if p <= 0.0 {
         return f64::NEG_INFINITY;
     }
@@ -339,24 +350,101 @@ fn normal_quantile(p: f64) -> f64 {
         return f64::INFINITY;
     }
 
-    let p = p.clamp(1e-10, 1.0 - 1e-10);
+    let q = p - 0.5;
+    if q.abs() <= 0.425 {
+        let r = 0.180625 - q * q;
+        let num = (((((((2.509_080_928_730_122_672_7e3 * r + 3.343_057_558_358_812_810_5e4)
+            * r
+            + 6.726_577_092_700_870_085_3e4)
+            * r
+            + 4.592_195_393_154_987_145_7e4)
+            * r
+            + 1.373_169_376_550_946_112_5e4)
+            * r
+            + 1.971_590_950_306_551_442_7e3)
+            * r
+            + 1.331_416_678_917_843_774_5e2)
+            * r
+            + 3.387_132_872_796_366_608_0e0)
+            * q;
+        let den = ((((((5.226_495_278_852_854_561_0e3 * r + 2.872_908_573_572_194_267_4e4) * r
+            + 3.930_789_580_009_271_061_0e4)
+            * r
+            + 2.121_379_430_158_659_586_7e4)
+            * r
+            + 5.394_196_021_424_751_107_7e3)
+            * r
+            + 6.871_870_074_920_579_083_0e2)
+            * r
+            + 4.231_333_070_160_091_125_2e1)
+            * r
+            + 1.0;
+        return num / den;
+    }
 
-    let sign = if p < 0.5 { -1.0 } else { 1.0 };
-    let p = if p < 0.5 { p } else { 1.0 - p };
+    let tail = if q < 0.0 { p } else { 1.0 - p };
+    let r = (-tail.ln()).sqrt();
+    let x = if r <= 5.0 {
+        let r = r - 1.6;
+        let num = ((((((7.745_450_142_783_414_076_40e-4 * r + 2.272_384_498_926_918_458_33e-2)
+            * r
+            + 2.417_807_251_774_506_117_70e-1)
+            * r
+            + 1.270_458_252_452_368_382_58e0)
+            * r
+            + 3.647_848_324_763_204_605_04e0)
+            * r
+            + 5.769_497_221_460_691_405_50e0)
+            * r
+            + 4.630_337_846_156_545_295_90e0)
+            * r
+            + 1.423_437_110_749_683_577_34e0;
+        let den = ((((((1.050_750_071_644_416_843_24e-9 * r + 5.475_938_084_995_344_946_00e-4)
+            * r
+            + 1.519_866_656_361_645_719_66e-2)
+            * r
+            + 1.481_039_764_274_800_745_90e-1)
+            * r
+            + 6.897_673_349_851_000_045_50e-1)
+            * r
+            + 1.676_384_830_183_803_849_40e0)
+            * r
+            + 2.053_191_626_637_758_821_87e0)
+            * r
+            + 1.0;
+        num / den
+    } else {
+        let r = r - 5.0;
+        let num = ((((((2.010_334_399_292_288_132_65e-7 * r + 2.711_555_568_743_487_578_15e-5)
+            * r
+            + 1.242_660_947_388_078_438_60e-3)
+            * r
+            + 2.653_218_952_657_612_309_30e-2)
+            * r
+            + 2.965_605_718_285_048_912_30e-1)
+            * r
+            + 1.784_826_539_917_291_335_80e0)
+            * r
+            + 5.463_784_911_164_114_369_90e0)
+            * r
+            + 6.657_904_643_501_103_777_20e0;
+        let den =
+            ((((((2.044_263_103_389_939_785_64e-15 * r + 1.421_511_758_316_445_888_70e-7) * r
+                + 1.846_318_317_510_054_681_80e-5)
+                * r
+                + 7.868_691_311_456_132_591_00e-4)
+                * r
+                + 1.487_536_129_085_061_485_25e-2)
+                * r
+                + 1.369_298_809_227_358_053_10e-1)
+                * r
+                + 5.998_322_065_558_879_376_90e-1)
+                * r
+                + 1.0;
+        num / den
+    };
 
-    let t = (-2.0 * p.ln()).sqrt();
-
-    // Coefficients for rational approximation
-    let c0 = 2.515517;
-    let c1 = 0.802853;
-    let c2 = 0.010328;
-    let d1 = 1.432788;
-    let d2 = 0.189269;
-    let d3 = 0.001308;
-
-    let x = t - (c0 + c1 * t + c2 * t * t) / (1.0 + d1 * t + d2 * t * t + d3 * t * t * t);
-
-    sign * x
+    if q < 0.0 { -x } else { x }
 }
 
 /// Standard normal CDF
@@ -386,6 +474,8 @@ fn erf(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn test_basic_bootstrap() {
@@ -503,11 +593,142 @@ mod tests {
     }
 
     #[test]
-    fn test_normal_quantile() {
-        // Test known values
-        assert!((normal_quantile(0.5) - 0.0).abs() < 0.01);
-        assert!((normal_quantile(0.975) - 1.96).abs() < 0.01);
-        assert!((normal_quantile(0.025) - (-1.96)).abs() < 0.01);
+    fn test_normal_quantile_known_values() {
+        assert_eq!(normal_quantile(0.5), 0.0);
+        assert!((normal_quantile(0.975) - 1.959963984540054).abs() < 1e-9);
+        assert!((normal_quantile(0.025) + 1.959963984540054).abs() < 1e-9);
+        assert!((normal_quantile(0.8413447460685429) - 1.0).abs() < 1e-9);
+        assert!((normal_quantile(0.001) + 3.090232306167813).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_normal_quantile_symmetry() {
+        for p in [0.001, 0.01, 0.025, 0.1, 0.25, 0.3, 0.45] {
+            let lower = normal_quantile(p);
+            let upper = normal_quantile(1.0 - p);
+            assert!((lower + upper).abs() < 1e-9, "p={p}: {lower} vs {upper}");
+            assert!(lower < 0.0, "p={p}: {lower}");
+        }
+    }
+
+    #[test]
+    fn test_normal_quantile_extreme_tails() {
+        let low = normal_quantile(1e-10);
+        assert!((low + 6.361340902404056).abs() < 1e-9, "q(1e-10)={low}");
+        let high = normal_quantile(1.0 - 1e-10);
+        assert!((high - 6.361340889697421).abs() < 1e-9, "q(1-1e-10)={high}");
+        assert!(normal_quantile(1e-300) < -37.0);
+        assert!(low < normal_quantile(1e-9));
+        assert_eq!(normal_quantile(0.0), f64::NEG_INFINITY);
+        assert_eq!(normal_quantile(1.0), f64::INFINITY);
+        assert!(normal_quantile(f64::NAN).is_nan());
+    }
+
+    /// Standard normal draw via the Box-Muller transform.
+    fn standard_normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
+        let u1: f64 = 1.0 - rng.random::<f64>();
+        let u2: f64 = rng.random::<f64>();
+        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+    }
+
+    /// Seeded synthetic sample sets: normal, skewed, uniform, spiky, small.
+    fn synthetic_sets() -> Vec<(&'static str, Vec<f64>)> {
+        let mut rng = StdRng::seed_from_u64(0x5eed);
+        let normal: Vec<f64> = (0..200)
+            .map(|_| 100.0 + 5.0 * standard_normal(&mut rng))
+            .collect();
+        let skewed: Vec<f64> = (0..150)
+            .map(|_| 50.0 - 20.0 * (1.0 - rng.random::<f64>()).ln())
+            .collect();
+        let uniform: Vec<f64> = (0..120).map(|_| rng.random_range(10.0..20.0)).collect();
+        let spiky: Vec<f64> = (0..80)
+            .map(|i| {
+                let base = 1000.0 + 10.0 * standard_normal(&mut rng);
+                if i % 17 == 0 { base * 5.0 } else { base }
+            })
+            .collect();
+        let small: Vec<f64> = (0..12).map(|_| 7.0 + standard_normal(&mut rng)).collect();
+        vec![
+            ("normal", normal),
+            ("skewed", skewed),
+            ("uniform", uniform),
+            ("spiky", spiky),
+            ("small", small),
+        ]
+    }
+
+    #[test]
+    fn test_ci_contains_point_estimate() {
+        for (name, samples) in synthetic_sets() {
+            for force_bca in [false, true] {
+                let config = BootstrapConfig {
+                    iterations: 2000,
+                    force_bca,
+                    ..Default::default()
+                };
+                let result = compute_bootstrap(&samples, &config).unwrap();
+                let ci = result.confidence_interval;
+                assert!(
+                    ci.lower <= result.point_estimate && result.point_estimate <= ci.upper,
+                    "{name} ({:?}): mean {} outside [{}, {}]",
+                    result.method,
+                    result.point_estimate,
+                    ci.lower,
+                    ci.upper
+                );
+                assert!((result.point_estimate - mean(&samples)).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn test_seeded_percentile_and_bca_contain_mean() {
+        let mut rng = StdRng::seed_from_u64(7);
+        for (name, samples) in synthetic_sets() {
+            let mut sorted = generate_bootstrap_means_serial(&samples, 2000, &mut rng);
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let m = mean(&samples);
+            let (lo, hi) = percentile_interval_sorted(&sorted, 0.95);
+            assert!(
+                lo <= m && m <= hi,
+                "{name} percentile: {m} outside [{lo}, {hi}]"
+            );
+            let (lo, hi) = bca_interval(&samples, &sorted, 0.95);
+            assert!(lo <= m && m <= hi, "{name} BCa: {m} outside [{lo}, {hi}]");
+        }
+    }
+
+    #[test]
+    fn test_ci_coverage_on_normal_data() {
+        const DATASETS: usize = 200;
+        const N: usize = 50;
+        const TRUE_MEAN: f64 = 100.0;
+        let mut data_rng = StdRng::seed_from_u64(42);
+        let mut boot_rng = StdRng::seed_from_u64(4242);
+        let mut covered_bca = 0;
+        let mut covered_percentile = 0;
+        for _ in 0..DATASETS {
+            let samples: Vec<f64> = (0..N)
+                .map(|_| TRUE_MEAN + 10.0 * standard_normal(&mut data_rng))
+                .collect();
+            let mut sorted = generate_bootstrap_means_serial(&samples, 500, &mut boot_rng);
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let (lo, hi) = bca_interval(&samples, &sorted, 0.95);
+            if lo <= TRUE_MEAN && TRUE_MEAN <= hi {
+                covered_bca += 1;
+            }
+            let (lo, hi) = percentile_interval_sorted(&sorted, 0.95);
+            if lo <= TRUE_MEAN && TRUE_MEAN <= hi {
+                covered_percentile += 1;
+            }
+        }
+        for (method, covered) in [("BCa", covered_bca), ("percentile", covered_percentile)] {
+            let rate = covered as f64 / DATASETS as f64;
+            assert!(
+                (0.90..=0.99).contains(&rate),
+                "{method} coverage {rate} outside [0.90, 0.99]"
+            );
+        }
     }
 
     #[test]

@@ -70,9 +70,20 @@ pub fn format_human_output(report: &Report) -> String {
                 ));
                 if let (Some(lower), Some(upper)) = (metrics.ci_lower_ns, metrics.ci_upper_ns) {
                     output.push_str(&format!(
-                        "      95% CI: [{}, {}]\n",
+                        "      {}: [{}, {}]\n",
+                        ci_label(metrics.ci_level),
                         format_duration(lower),
                         format_duration(upper),
+                    ));
+                }
+                // Shown only when outlier removal moves the mean.
+                if let Some(trimmed) = metrics
+                    .trimmed_mean_ns
+                    .filter(|t| (t - metrics.mean_ns).abs() > f64::EPSILON * metrics.mean_ns.abs())
+                {
+                    output.push_str(&format!(
+                        "      trimmed mean (outliers removed): {}\n",
+                        format_duration(trimmed),
                     ));
                 }
                 if let Some(throughput) = metrics.throughput_ops_sec {
@@ -271,4 +282,30 @@ pub fn format_human_output(report: &Report) -> String {
     ));
 
     output
+}
+
+/// Label for a confidence interval at `level`, e.g. `95% CI` or `99.5% CI`.
+///
+/// Whole percentages print without decimals. Others print one decimal.
+fn ci_label(level: f64) -> String {
+    let pct = level * 100.0;
+    if (pct - pct.round()).abs() < 1e-9 {
+        format!("{:.0}% CI", pct)
+    } else {
+        format!("{:.1}% CI", pct)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ci_label_follows_level() {
+        assert_eq!(ci_label(0.95), "95% CI");
+        assert_eq!(ci_label(0.99), "99% CI");
+        assert_eq!(ci_label(0.90), "90% CI");
+        assert_eq!(ci_label(0.995), "99.5% CI");
+        assert_eq!(ci_label(0.999), "99.9% CI");
+    }
 }

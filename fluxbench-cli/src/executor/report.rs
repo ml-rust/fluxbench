@@ -66,7 +66,8 @@ pub fn build_report(
             let stats_opt = stats_map.get(&result.benchmark_id).cloned().flatten();
 
             stats_opt.as_ref().map(|s| {
-                // Compute bootstrap CI (expensive - parallelized)
+                // Compute bootstrap CI (expensive - parallelized).
+                // `s` comes from `compute_summary(&result.samples, ..)`, so mean and CI share one slice.
                 let bootstrap_config = BootstrapConfig {
                     iterations: config.bootstrap_iterations,
                     confidence_level: config.confidence_level,
@@ -95,6 +96,7 @@ pub fn build_report(
                 BenchmarkMetrics {
                     samples: s.sample_count,
                     mean_ns: s.mean,
+                    trimmed_mean_ns: Some(s.trimmed_mean),
                     median_ns: s.median,
                     std_dev_ns: s.std_dev,
                     min_ns: s.min,

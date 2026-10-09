@@ -2,9 +2,9 @@
 //!
 //! Uses IQR (Interquartile Range) method to identify outliers.
 //!
-//! **Critical Design Decision**: Outliers are detected but NOT removed from
-//! percentile/min/max calculations. For tail latency metrics, outliers ARE the signal.
-//! Only mean/median/stddev use cleaned data.
+//! Outliers are detected and reported, never removed from summary statistics.
+//! For tail latency, outliers are the signal.
+//! Only the trimmed mean uses the cleaned samples.
 
 use crate::percentiles::compute_percentile;
 
@@ -37,7 +37,7 @@ impl Default for OutlierMethod {
 pub struct OutlierAnalysis {
     /// Original samples (ALL data preserved)
     pub all_samples: Vec<f64>,
-    /// Samples with outliers removed (for mean/stddev computation)
+    /// Samples with outliers removed (for the trimmed mean)
     pub cleaned_samples: Vec<f64>,
     /// Indices of outlier samples
     pub outlier_indices: Vec<usize>,

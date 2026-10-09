@@ -188,8 +188,13 @@ pub enum BenchmarkStatus {
 pub struct BenchmarkMetrics {
     /// Number of samples collected
     pub samples: usize,
-    /// Mean execution time in nanoseconds
+    /// Mean execution time in nanoseconds over all samples, outliers included.
+    /// The bootstrap CI estimates this value.
     pub mean_ns: f64,
+    /// Mean execution time in nanoseconds with detected outliers removed.
+    /// Reports without this field read as `None`.
+    #[serde(default)]
+    pub trimmed_mean_ns: Option<f64>,
     /// Median execution time in nanoseconds
     pub median_ns: f64,
     /// Standard deviation in nanoseconds
@@ -243,6 +248,7 @@ impl From<&SummaryStatistics> for BenchmarkMetrics {
         Self {
             samples: stats.sample_count,
             mean_ns: stats.mean,
+            trimmed_mean_ns: Some(stats.trimmed_mean),
             median_ns: stats.median,
             std_dev_ns: stats.std_dev,
             min_ns: stats.min,
@@ -256,7 +262,7 @@ impl From<&SummaryStatistics> for BenchmarkMetrics {
             kurtosis: stats.kurtosis,
             ci_lower_ns: None, // Filled by bootstrap
             ci_upper_ns: None,
-            ci_level: 0.95,
+            ci_level: fluxbench_stats::DEFAULT_CONFIDENCE_LEVEL,
             throughput_ops_sec: None,
             alloc_bytes: 0,
             alloc_count: 0,
