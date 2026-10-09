@@ -6,7 +6,7 @@
 //! For tail latency, outliers are the signal.
 //! Only the trimmed mean uses the cleaned samples.
 
-use crate::percentiles::compute_percentile;
+use crate::percentiles::{percentile_of_sorted, sorted_samples};
 
 /// Method for outlier detection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,8 +113,9 @@ pub fn detect_outliers(samples: &[f64], method: OutlierMethod) -> OutlierAnalysi
 
 /// IQR-based outlier detection
 fn detect_iqr_outliers(samples: &[f64], k: f64) -> OutlierAnalysis {
-    let q1 = compute_percentile(samples, 25.0);
-    let q3 = compute_percentile(samples, 75.0);
+    let sorted = sorted_samples(samples);
+    let q1 = percentile_of_sorted(&sorted, 25.0);
+    let q3 = percentile_of_sorted(&sorted, 75.0);
     let iqr = q3 - q1;
 
     let lower_bound = q1 - k * iqr;

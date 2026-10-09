@@ -5,7 +5,7 @@
 //! Outlier detection still runs. It reports counts, fences, and a separate trimmed mean.
 
 use crate::outliers::{OutlierAnalysis, OutlierMethod, detect_outliers};
-use crate::percentiles::{compute_percentile, percentile_of_sorted, sorted_samples};
+use crate::percentiles::{compute_percentiles_sorted, percentile_of_sorted, sorted_samples};
 
 /// Comprehensive summary statistics
 #[derive(Debug, Clone)]
@@ -191,9 +191,11 @@ impl SummaryStatistics {
 
     /// Interquartile range (from all data)
     pub fn iqr(&self) -> f64 {
-        let q1 = compute_percentile(&self.outlier_analysis.all_samples, 25.0);
-        let q3 = compute_percentile(&self.outlier_analysis.all_samples, 75.0);
-        q3 - q1
+        let sorted = sorted_samples(&self.outlier_analysis.all_samples);
+        match compute_percentiles_sorted(&sorted, &[25.0, 75.0]).as_slice() {
+            [q1, q3] => q3 - q1,
+            _ => 0.0,
+        }
     }
 
     /// Check if distribution appears stable (low CV)
@@ -289,6 +291,22 @@ pub fn compute_cycles_stats(cycles: &[f64], nanos: &[f64]) -> CyclesStatistics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::percentiles::compute_percentile;
+
+    #[test]
+    fn iqr_matches_two_call_quartiles() {
+        let datasets: [Vec<f64>; 4] = [
+            vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            vec![9.0, 1.0, 7.0, 3.0, 100.0, 4.0],
+            (1..=100).map(f64::from).collect(),
+            vec![42.0],
+        ];
+        for samples in datasets {
+            let summary = compute_summary(&samples, OutlierMethod::default());
+            let old = compute_percentile(&samples, 75.0) - compute_percentile(&samples, 25.0);
+            assert_eq!(summary.iqr(), old, "{samples:?}");
+        }
+    }
 
     #[test]
     fn test_basic_summary() {
