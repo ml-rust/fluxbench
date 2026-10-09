@@ -339,7 +339,7 @@ fn mean(samples: &[f64]) -> f64 {
 /// Returns negative infinity for `p <= 0` and positive infinity for `p >= 1`.
 // The coefficients are the published AS241 values, so they keep every digit.
 #[allow(clippy::excessive_precision)]
-fn normal_quantile(p: f64) -> f64 {
+pub(crate) fn normal_quantile(p: f64) -> f64 {
     if p.is_nan() {
         return f64::NAN;
     }
@@ -448,7 +448,7 @@ fn normal_quantile(p: f64) -> f64 {
 }
 
 /// Standard normal CDF
-fn normal_cdf(x: f64) -> f64 {
+pub(crate) fn normal_cdf(x: f64) -> f64 {
     0.5 * (1.0 + erf(x / std::f64::consts::SQRT_2))
 }
 

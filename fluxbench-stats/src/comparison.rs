@@ -1,8 +1,10 @@
 //! A/B Comparison Statistics
 //!
-//! Provides statistical comparison between baseline and candidate distributions
-//! using bootstrap resampling to compute probability of regression.
+//! Compares a baseline and a candidate distribution.
+//! `compare_distributions` bootstraps raw samples.
+//! `compare_summaries` uses a Welch-style z test when only mean, deviation, and count exist.
 
+use crate::bootstrap::{normal_cdf, normal_quantile};
 use crate::outliers::OutlierMethod;
 use crate::summary::{SummaryStatistics, compute_summary};
 use rand::prelude::*;
@@ -167,20 +169,13 @@ pub fn compare_distributions(
     let difference_ci_lower = sorted_diffs[lower_idx.min(last_idx)];
     let difference_ci_upper = sorted_diffs[upper_idx.min(last_idx)];
 
-    // Effect size (Cohen's d)
-    // Pooled standard deviation
-    let n1 = baseline.len() as f64;
-    let n2 = candidate.len() as f64;
-    let var1 = baseline_stats.std_dev.powi(2);
-    let var2 = candidate_stats.std_dev.powi(2);
-    let pooled_std = ((((n1 - 1.0) * var1) + ((n2 - 1.0) * var2)) / (n1 + n2 - 2.0)).sqrt();
-
-    let effect_size = if pooled_std > 0.0 {
-        observed_diff / pooled_std
-    } else {
-        0.0
-    };
-
+    let effect_size = cohens_d(
+        observed_diff,
+        baseline.len(),
+        baseline_stats.std_dev,
+        candidate.len(),
+        candidate_stats.std_dev,
+    );
     let effect_interpretation = interpret_effect_size(effect_size);
 
     // Significance: CI doesn't include zero AND change exceeds threshold
@@ -202,8 +197,147 @@ pub fn compare_distributions(
     })
 }
 
+/// Cohen's d: `difference` divided by the pooled standard deviation.
+///
+/// `n1`/`std_dev1` describe the baseline, `n2`/`std_dev2` the candidate.
+/// Returns 0.0 when the pooled deviation is zero or the result is not finite.
+pub fn cohens_d(difference: f64, n1: usize, std_dev1: f64, n2: usize, std_dev2: f64) -> f64 {
+    let (n1, n2) = (n1 as f64, n2 as f64);
+    let dof = n1 + n2 - 2.0;
+    if dof <= 0.0 {
+        return 0.0;
+    }
+    let pooled_var = ((n1 - 1.0) * std_dev1.powi(2) + (n2 - 1.0) * std_dev2.powi(2)) / dof;
+    let pooled_std = pooled_var.sqrt();
+    if pooled_std.is_nan() || pooled_std <= 0.0 {
+        return 0.0;
+    }
+    let d = difference / pooled_std;
+    if d.is_finite() { d } else { 0.0 }
+}
+
+/// Mean, standard deviation, and sample count of one distribution.
+///
+/// `std_dev` is the sample standard deviation (n - 1 denominator).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SampleSummary {
+    /// Arithmetic mean
+    pub mean: f64,
+    /// Sample standard deviation
+    pub std_dev: f64,
+    /// Number of samples
+    pub count: usize,
+}
+
+/// Result of comparing two distributions from summary statistics alone
+#[derive(Debug, Clone)]
+pub struct SummaryComparison {
+    /// Relative change in percent: (candidate - baseline) / baseline * 100
+    pub relative_change: f64,
+    /// Candidate mean minus baseline mean
+    pub absolute_change: f64,
+    /// Normal-approximation probability that the candidate mean is larger
+    pub probability_regression: f64,
+    /// Lower bound of the difference CI at the configured confidence level
+    pub difference_ci_lower: f64,
+    /// Upper bound of the difference CI at the configured confidence level
+    pub difference_ci_upper: f64,
+    /// Welch z statistic: difference over its standard error
+    pub z_score: f64,
+    /// CI excludes zero and the change reaches `significance_threshold`
+    pub is_significant: bool,
+    /// Effect size (Cohen's d, pooled standard deviation)
+    pub effect_size: f64,
+    /// Effect size interpretation
+    pub effect_interpretation: EffectInterpretation,
+}
+
+/// Compare two distributions from mean, standard deviation, and count.
+///
+/// This is the fallback when raw samples are not available.
+/// It uses a Welch-style z test: the difference of means over
+/// `sqrt(s1²/n1 + s2²/n2)`, read against the standard normal.
+/// The normal approximation holds for large counts. Benchmarks collect 100 samples by default.
+/// `config.bootstrap_iterations` and `config.outlier_method` are not used.
+pub fn compare_summaries(
+    baseline: &SampleSummary,
+    candidate: &SampleSummary,
+    config: &ComparisonConfig,
+) -> Result<SummaryComparison, ComparisonError> {
+    if baseline.count < 2 {
+        return Err(ComparisonError::InsufficientBaseline);
+    }
+    if candidate.count < 2 {
+        return Err(ComparisonError::InsufficientCandidate);
+    }
+    if !summary_is_valid(baseline) {
+        return Err(ComparisonError::InvalidBaselineSummary);
+    }
+    if !summary_is_valid(candidate) {
+        return Err(ComparisonError::InvalidCandidateSummary);
+    }
+    let level = config.confidence_level;
+    if level.is_nan() || level <= 0.0 || level >= 1.0 {
+        return Err(ComparisonError::InvalidConfidenceLevel(level));
+    }
+
+    let difference = candidate.mean - baseline.mean;
+    let relative_change = if baseline.mean > 0.0 {
+        difference / baseline.mean * 100.0
+    } else {
+        0.0
+    };
+
+    let standard_error = (baseline.std_dev.powi(2) / baseline.count as f64
+        + candidate.std_dev.powi(2) / candidate.count as f64)
+        .sqrt();
+    let critical = normal_quantile(1.0 - (1.0 - level) / 2.0);
+
+    // Zero spread on both sides: any nonzero difference is exact.
+    let (z_score, probability_regression, half_width) = if standard_error > 0.0 {
+        let z = difference / standard_error;
+        (z, normal_cdf(z), critical * standard_error)
+    } else if difference > 0.0 {
+        (f64::INFINITY, 1.0, 0.0)
+    } else if difference < 0.0 {
+        (f64::NEG_INFINITY, 0.0, 0.0)
+    } else {
+        (0.0, 0.5, 0.0)
+    };
+
+    let difference_ci_lower = difference - half_width;
+    let difference_ci_upper = difference + half_width;
+    let ci_excludes_zero = difference_ci_lower > 0.0 || difference_ci_upper < 0.0;
+    let is_significant = ci_excludes_zero && relative_change.abs() >= config.significance_threshold;
+
+    let effect_size = cohens_d(
+        difference,
+        baseline.count,
+        baseline.std_dev,
+        candidate.count,
+        candidate.std_dev,
+    );
+
+    Ok(SummaryComparison {
+        relative_change,
+        absolute_change: difference,
+        probability_regression,
+        difference_ci_lower,
+        difference_ci_upper,
+        z_score,
+        is_significant,
+        effect_size,
+        effect_interpretation: interpret_effect_size(effect_size),
+    })
+}
+
+/// A summary is usable when its mean is finite and its deviation is finite and non-negative.
+fn summary_is_valid(summary: &SampleSummary) -> bool {
+    summary.mean.is_finite() && summary.std_dev.is_finite() && summary.std_dev >= 0.0
+}
+
 /// Interpret effect size magnitude using Cohen's conventions
-fn interpret_effect_size(d: f64) -> EffectInterpretation {
+pub fn interpret_effect_size(d: f64) -> EffectInterpretation {
     let abs_d = d.abs();
     if abs_d < 0.2 {
         EffectInterpretation::Negligible
@@ -235,6 +369,15 @@ pub enum ComparisonError {
     /// Bootstrap iterations is 0
     #[error("Bootstrap iterations is 0: set a count of at least 1")]
     NoIterations,
+    /// Baseline summary has a non-finite mean or an invalid deviation
+    #[error("Baseline summary is invalid: mean and std dev must be finite, std dev non-negative")]
+    InvalidBaselineSummary,
+    /// Candidate summary has a non-finite mean or an invalid deviation
+    #[error("Candidate summary is invalid: mean and std dev must be finite, std dev non-negative")]
+    InvalidCandidateSummary,
+    /// Confidence level is outside the open interval (0, 1)
+    #[error("Confidence level {0} is outside (0, 1): set a value such as 0.95")]
+    InvalidConfidenceLevel(f64),
 }
 
 #[cfg(test)]
@@ -375,6 +518,155 @@ mod tests {
             compare_distributions(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0], &config),
             Err(ComparisonError::NoIterations)
         ));
+    }
+
+    fn summary(mean: f64, std_dev: f64, count: usize) -> SampleSummary {
+        SampleSummary {
+            mean,
+            std_dev,
+            count,
+        }
+    }
+
+    fn summary_config(threshold: f64) -> ComparisonConfig {
+        ComparisonConfig {
+            significance_threshold: threshold,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn compare_summaries_known_regression() {
+        let r = compare_summaries(
+            &summary(100.0, 10.0, 100),
+            &summary(103.0, 10.0, 100),
+            &summary_config(1.0),
+        )
+        .unwrap();
+        assert!((r.relative_change - 3.0).abs() < 1e-12);
+        assert!((r.absolute_change - 3.0).abs() < 1e-12);
+        assert!((r.z_score - 2.1213203435596424).abs() < 1e-12);
+        // normal_cdf uses an erf approximation accurate to about 1.5e-7.
+        assert!((r.probability_regression - 0.9830525732376554).abs() < 1e-6);
+        assert!((r.difference_ci_lower - 0.22819235130064497).abs() < 1e-9);
+        assert!((r.difference_ci_upper - 5.771807648699355).abs() < 1e-9);
+        assert!((r.effect_size - 0.3).abs() < 1e-12);
+        assert_eq!(r.effect_interpretation, EffectInterpretation::Small);
+        assert!(r.is_significant);
+    }
+
+    #[test]
+    fn compare_summaries_small_change_is_not_significant() {
+        let r = compare_summaries(
+            &summary(100.0, 10.0, 100),
+            &summary(101.0, 10.0, 100),
+            &summary_config(0.5),
+        )
+        .unwrap();
+        assert!((r.probability_regression - 0.7602499389065233).abs() < 1e-6);
+        assert!((r.difference_ci_lower + 1.771807648699355).abs() < 1e-9);
+        assert!((r.difference_ci_upper - 3.771807648699355).abs() < 1e-9);
+        assert!(!r.is_significant);
+    }
+
+    #[test]
+    fn compare_summaries_known_improvement() {
+        let r = compare_summaries(
+            &summary(100.0, 10.0, 100),
+            &summary(97.0, 10.0, 100),
+            &summary_config(1.0),
+        )
+        .unwrap();
+        assert!((r.relative_change + 3.0).abs() < 1e-12);
+        assert!((r.probability_regression - 0.016947426762344675).abs() < 1e-6);
+        assert!(r.difference_ci_upper < 0.0);
+        assert!((r.effect_size + 0.3).abs() < 1e-12);
+        assert!(r.is_significant);
+    }
+
+    #[test]
+    fn compare_summaries_unequal_variance_and_count() {
+        let r = compare_summaries(
+            &summary(200.0, 20.0, 50),
+            &summary(210.0, 5.0, 200),
+            &summary_config(1.0),
+        )
+        .unwrap();
+        assert!((r.z_score - 3.5082320772281173).abs() < 1e-9);
+        assert!((r.probability_regression - 0.9997744523261929).abs() < 1e-6);
+        assert!((r.difference_ci_lower - 4.413243076870111).abs() < 1e-9);
+        assert!((r.difference_ci_upper - 15.58675692312989).abs() < 1e-9);
+        assert!((r.effect_size - 1.0045673924539302).abs() < 1e-9);
+        assert_eq!(r.effect_interpretation, EffectInterpretation::Large);
+    }
+
+    #[test]
+    fn compare_summaries_threshold_gates_significance() {
+        // The CI excludes zero, but 3% is under the 5% threshold.
+        let r = compare_summaries(
+            &summary(100.0, 10.0, 100),
+            &summary(103.0, 10.0, 100),
+            &summary_config(5.0),
+        )
+        .unwrap();
+        assert!(r.difference_ci_lower > 0.0);
+        assert!(!r.is_significant);
+    }
+
+    #[test]
+    fn compare_summaries_zero_spread() {
+        let config = summary_config(1.0);
+        let up =
+            compare_summaries(&summary(100.0, 0.0, 10), &summary(105.0, 0.0, 10), &config).unwrap();
+        assert_eq!(up.probability_regression, 1.0);
+        assert_eq!(up.difference_ci_lower, 5.0);
+        assert_eq!(up.difference_ci_upper, 5.0);
+        assert_eq!(up.effect_size, 0.0);
+        assert!(up.is_significant);
+
+        let same =
+            compare_summaries(&summary(100.0, 0.0, 10), &summary(100.0, 0.0, 10), &config).unwrap();
+        assert_eq!(same.probability_regression, 0.5);
+        assert!(!same.is_significant);
+    }
+
+    #[test]
+    fn compare_summaries_rejects_bad_input() {
+        let config = ComparisonConfig::default();
+        let good = summary(100.0, 1.0, 10);
+        assert!(matches!(
+            compare_summaries(&summary(100.0, 1.0, 1), &good, &config),
+            Err(ComparisonError::InsufficientBaseline)
+        ));
+        assert!(matches!(
+            compare_summaries(&good, &summary(100.0, 1.0, 1), &config),
+            Err(ComparisonError::InsufficientCandidate)
+        ));
+        assert!(matches!(
+            compare_summaries(&summary(f64::NAN, 1.0, 10), &good, &config),
+            Err(ComparisonError::InvalidBaselineSummary)
+        ));
+        assert!(matches!(
+            compare_summaries(&good, &summary(100.0, -1.0, 10), &config),
+            Err(ComparisonError::InvalidCandidateSummary)
+        ));
+        let bad_level = ComparisonConfig {
+            confidence_level: 1.0,
+            ..Default::default()
+        };
+        assert!(matches!(
+            compare_summaries(&good, &good, &bad_level),
+            Err(ComparisonError::InvalidConfidenceLevel(_))
+        ));
+    }
+
+    #[test]
+    fn cohens_d_uses_pooled_deviation() {
+        assert!((cohens_d(5.0, 10, 10.0, 10, 10.0) - 0.5).abs() < 1e-12);
+        // Pooled variance: (9 * 4 + 9 * 16) / 18 = 10.
+        assert!((cohens_d(10.0f64.sqrt(), 10, 2.0, 10, 4.0) - 1.0).abs() < 1e-12);
+        assert_eq!(cohens_d(5.0, 10, 0.0, 10, 0.0), 0.0);
+        assert_eq!(cohens_d(5.0, 1, 1.0, 1, 1.0), 0.0);
     }
 
     #[test]

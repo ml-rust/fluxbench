@@ -18,8 +18,8 @@ pub use bootstrap::{
     BootstrapConfig, BootstrapMethod, BootstrapResult, ConfidenceInterval, compute_bootstrap,
 };
 pub use comparison::{
-    ComparisonConfig, ComparisonError, ComparisonResult, EffectInterpretation,
-    compare_distributions,
+    ComparisonConfig, ComparisonError, ComparisonResult, EffectInterpretation, SampleSummary,
+    SummaryComparison, cohens_d, compare_distributions, compare_summaries, interpret_effect_size,
 };
 pub use outliers::{OutlierAnalysis, OutlierMethod, detect_outliers};
 pub use percentiles::{Percentiles, compute_percentile, compute_percentiles};
