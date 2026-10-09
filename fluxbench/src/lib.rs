@@ -49,8 +49,8 @@
 // Re-export core types
 pub use fluxbench_core::{
     Bencher, BenchmarkDef, BenchmarkResult, ChartDef, ChartType, CompareDef, GroupDef,
-    IterationMode, ReportDef, Severity, TrackingAllocator, current_allocation,
-    reset_allocation_counter,
+    IterationMode, MeasureConfig, MeasureError, ReportDef, Severity, TrackingAllocator,
+    current_allocation, reset_allocation_counter,
 };
 
 // Re-export macros

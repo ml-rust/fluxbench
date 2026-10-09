@@ -76,7 +76,7 @@ pub struct IpcBenchmarkResult {
     pub bench_id: String,
     /// Timing samples collected during measurement phase.
     pub samples: Vec<Sample>,
-    /// Total number of iterations performed.
+    /// Measurement-phase routine calls. Warmup calls are excluded.
     pub total_iterations: u64,
     /// Total benchmark duration in nanoseconds.
     pub total_duration_nanos: u64,

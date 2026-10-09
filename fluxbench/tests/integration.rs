@@ -2,64 +2,57 @@
 //!
 //! These tests verify the end-to-end behavior of the benchmarking system.
 
-use fluxbench::{Bencher, BootstrapConfig, MetricContext, compute_bootstrap, compute_summary};
+use fluxbench::{
+    Bencher, BootstrapConfig, MeasureConfig, MetricContext, compute_bootstrap, compute_summary,
+};
 use fluxbench_logic::{Severity, Verification, VerificationContext, run_verifications};
 use fluxbench_stats::{
     ComparisonConfig, OutlierMethod, compare_distributions, compute_cycles_stats,
 };
 
-/// Test that the Bencher collects samples correctly
+/// Fixed-mode config: `samples` samples of `ips` calls, no warmup.
+fn fixed(samples: usize, ips: u64, track_allocations: bool) -> MeasureConfig {
+    MeasureConfig {
+        warmup_ns: 0,
+        measurement_ns: 10_000_000,
+        sample_count: samples,
+        fixed_iters_per_sample: Some(ips),
+        min_iterations: None,
+        max_iterations: None,
+        track_allocations,
+    }
+}
+
+/// Test that one `iter` call collects every sample
 #[test]
 fn test_bencher_collects_samples() {
-    let mut bencher = Bencher::new(false);
+    let mut bencher = Bencher::with_config(fixed(10, 1, false));
 
-    // Warmup phase (required before measurement)
-    for _ in 0..5 {
-        bencher.iter(|| {
-            let mut sum = 0u64;
-            for i in 0..1000 {
-                sum += i;
-            }
-            sum
-        });
-    }
-
-    // Transition to measurement mode (iters_per_sample=1 for this test)
-    bencher.start_measurement(1_000_000_000); // 1 second target
-    bencher.set_iters_per_sample(1); // Record each iteration as a sample
-
-    // Run 10 iterations
-    for _ in 0..10 {
-        bencher.iter(|| {
-            let mut sum = 0u64;
-            for i in 0..1000 {
-                sum += i;
-            }
-            sum
-        });
-    }
+    bencher.iter(|| {
+        let mut sum = 0u64;
+        for i in 0..1000 {
+            sum += std::hint::black_box(i);
+        }
+        sum
+    });
 
     let samples = bencher.samples();
     assert_eq!(samples.len(), 10);
-
-    // All samples should have non-zero duration
     for sample in samples {
-        assert!(sample.duration_nanos > 0.0);
+        assert!(sample.duration_nanos >= 0.0);
         assert_eq!(sample.iterations, 1);
     }
 }
 
-/// Test that iter_with_setup excludes setup time
+/// Test that iter_with_setup runs one setup per measured call
 #[test]
 fn test_iter_with_setup() {
-    let mut bencher = Bencher::new(false);
+    let mut bencher = Bencher::with_config(fixed(5, 1, false));
 
-    for _ in 0..5 {
-        bencher.iter_with_setup(
-            || vec![1u64; 1000],       // Heavy setup
-            |v| v.iter().sum::<u64>(), // Light measurement
-        );
-    }
+    bencher.iter_with_setup(
+        || vec![1u64; 1000],       // Heavy setup
+        |v| v.iter().sum::<u64>(), // Light measurement
+    );
 
     assert_eq!(bencher.iteration_count(), 5);
 }
@@ -256,33 +249,28 @@ fn test_effect_size_interpretation() {
 /// Test BenchmarkResult finalization
 #[test]
 fn test_benchmark_result_finalization() {
-    let mut bencher = Bencher::new(true); // Track allocations
+    let mut bencher = Bencher::with_config(MeasureConfig {
+        warmup_ns: 1_000_000,
+        measurement_ns: 3_000_000,
+        sample_count: 3,
+        fixed_iters_per_sample: None,
+        min_iterations: None,
+        max_iterations: None,
+        track_allocations: true,
+    });
 
-    // Warmup phase
-    for _ in 0..3 {
-        bencher.iter(|| {
-            let v: Vec<u64> = (0..100).collect();
-            v.len()
-        });
-    }
+    bencher.iter(|| {
+        let v: Vec<u64> = (0..100).collect();
+        v.len()
+    });
 
-    // Transition to measurement mode
-    bencher.start_measurement(1_000_000_000);
-    bencher.set_iters_per_sample(1);
-
-    // Measurement phase
-    for _ in 0..3 {
-        bencher.iter(|| {
-            // Simple computation
-            let v: Vec<u64> = (0..100).collect();
-            v.len()
-        });
-    }
-
-    let result = bencher.finish();
-    assert_eq!(result.iterations, 6); // 3 warmup + 3 measurement
-    assert_eq!(result.samples.len(), 3); // Only measurement samples recorded
+    let result = bencher.finish().expect("measurement succeeds");
+    assert_eq!(result.samples.len(), 3);
+    assert!(result.warmup_iterations > 0);
+    // Measurement iterations exclude warmup.
+    assert_eq!(result.iterations, 3 * result.iters_per_sample);
     assert!(result.total_time_ns > 0);
+    assert!(!result.truncated);
 }
 
 /// Test improvement detection (opposite of regression)

@@ -6,8 +6,8 @@
 //! a SIGTERM handler for graceful shutdown. On non-Unix, falls back to
 //! stdin/stdout and skips signal handling.
 
-use crate::measure::pin_to_cpu;
-use crate::{Bencher, BenchmarkDef, run_benchmark_loop};
+use crate::measure::{cycles_overhead, pin_to_cpu, timer_overhead_ns};
+use crate::{Bencher, BenchmarkDef, MeasureConfig, run_benchmark_loop};
 use fluxbench_ipc::{
     BenchmarkConfig, FailureKind, FrameReader, FrameWriter, SampleRingBuffer, SupervisorCommand,
     WorkerCapabilities, WorkerMessage,
@@ -113,6 +113,10 @@ impl WorkerMain {
         // Pin to CPU 0 for stable TSC
         let _ = pin_to_cpu(0);
 
+        // Calibrate timer overhead on the pinned core before any benchmark runs
+        let _ = timer_overhead_ns();
+        let _ = cycles_overhead();
+
         // Process commands
         loop {
             if shutdown_requested() {
@@ -169,24 +173,20 @@ impl WorkerMain {
 
         // Run with panic catching
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let bencher = Bencher::for_config(
-                config.track_allocations,
-                config.sample_count as usize,
-                config.iters_per_sample,
-            );
-
-            run_benchmark_loop(
-                bencher,
-                |b| (bench.runner_fn)(b),
-                config.warmup_time_ns,
-                config.measurement_time_ns,
-                config.min_iterations,
-                config.max_iterations,
-            )
+            let bencher = Bencher::with_config(MeasureConfig::from(config));
+            run_benchmark_loop(bencher, |b| (bench.runner_fn)(b))
         }));
 
         match result {
-            Ok(bench_result) => {
+            Ok(Ok(bench_result)) => {
+                if bench_result.truncated {
+                    eprintln!(
+                        "fluxbench: warning: {bench_id}: deadline reached, {} of {} samples kept",
+                        bench_result.samples.len(),
+                        config.sample_count
+                    );
+                }
+
                 // Send samples in batches
                 for sample in bench_result.samples {
                     if let Some(batch) = ring_buffer.push(sample) {
@@ -203,6 +203,13 @@ impl WorkerMain {
                 self.writer.write(&WorkerMessage::Complete {
                     total_iterations: bench_result.iterations,
                     total_duration_nanos: bench_result.total_time_ns,
+                })?;
+            }
+            Ok(Err(error)) => {
+                self.writer.write(&WorkerMessage::Failure {
+                    kind: FailureKind::Unknown,
+                    message: error.to_string(),
+                    backtrace: None,
                 })?;
             }
             Err(panic) => {

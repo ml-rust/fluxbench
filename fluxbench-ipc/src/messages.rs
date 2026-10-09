@@ -149,9 +149,9 @@ pub enum WorkerMessage {
 
     /// Benchmark completed successfully
     Complete {
-        /// Total number of iterations
+        /// Measurement-phase routine calls. Warmup calls are excluded.
         total_iterations: u64,
-        /// Total measurement time in nanoseconds
+        /// Sum of each sample's mean times its iterations, in nanoseconds
         total_duration_nanos: u64,
     },
 

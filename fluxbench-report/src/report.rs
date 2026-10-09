@@ -114,6 +114,11 @@ pub struct ReportConfig {
     pub confidence_level: f64,
     /// Whether memory allocations were tracked
     pub track_allocations: bool,
+    /// Median cost of one empty timer pair in nanoseconds.
+    /// The engine subtracts it once per timed region.
+    /// Reports without this field read as 0.
+    #[serde(default)]
+    pub timer_overhead_ns: f64,
 }
 
 /// Sample count for reports written before `sample_count` existed

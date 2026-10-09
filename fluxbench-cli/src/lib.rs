@@ -917,6 +917,7 @@ mod tests {
                 bootstrap_iterations: 0,
                 confidence_level: 0.95,
                 track_allocations: false,
+                timer_overhead_ns: 0.0,
             },
         }
     }

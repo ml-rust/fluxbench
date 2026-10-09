@@ -164,6 +164,7 @@ mod tests {
                     bootstrap_iterations: 10_000,
                     confidence_level: 0.95,
                     track_allocations: false,
+                    timer_overhead_ns: 0.0,
                 },
             },
             results,

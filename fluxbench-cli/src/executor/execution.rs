@@ -31,7 +31,9 @@
 //! ```
 
 use crate::supervisor::{IpcBenchmarkResult, IpcBenchmarkStatus, Supervisor};
-use fluxbench_core::{Bencher, BenchmarkDef, run_benchmark_loop};
+use fluxbench_core::{
+    Bencher, BenchmarkDef, MeasureConfig, cycles_overhead, run_benchmark_loop, timer_overhead_ns,
+};
 use fluxbench_ipc::{BenchmarkConfig, Sample};
 use fluxbench_report::BenchmarkStatus;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -117,6 +119,19 @@ impl ExecutionConfig {
         }
     }
 
+    /// Build the measurement config for one in-process run.
+    pub fn to_measure_config(&self) -> MeasureConfig {
+        MeasureConfig {
+            warmup_ns: self.warmup_time_ns,
+            measurement_ns: self.measurement_time_ns,
+            sample_count: self.sample_count,
+            fixed_iters_per_sample: self.iters_per_sample,
+            min_iterations: self.min_iterations,
+            max_iterations: self.max_iterations,
+            track_allocations: self.track_allocations,
+        }
+    }
+
     /// Build the IPC config for one worker run.
     pub fn to_ipc_config(&self, timeout: Duration) -> BenchmarkConfig {
         BenchmarkConfig {
@@ -183,6 +198,9 @@ pub struct Executor {
 impl Executor {
     /// Create a new in-process executor with the given configuration
     pub fn new(config: ExecutionConfig) -> Self {
+        // Calibrate timer overhead before any benchmark runs
+        let _ = timer_overhead_ns();
+        let _ = cycles_overhead();
         Self {
             config,
             results: Vec::new(),
@@ -219,26 +237,23 @@ impl Executor {
 
         // Run with panic catching
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let bencher = Bencher::for_config(
-                cfg.track_allocations,
-                cfg.sample_count,
-                cfg.iters_per_sample,
-            );
-
-            run_benchmark_loop(
-                bencher,
-                |b| (bench.runner_fn)(b),
-                cfg.warmup_time_ns,
-                cfg.measurement_time_ns,
-                cfg.min_iterations,
-                cfg.max_iterations,
-            )
+            let bencher = Bencher::with_config(cfg.to_measure_config());
+            run_benchmark_loop(bencher, |b| (bench.runner_fn)(b))
         }));
 
         let duration_ns = start.elapsed().as_nanos() as u64;
 
         match result {
-            Ok(bench_result) => {
+            Ok(Ok(bench_result)) => {
+                if bench_result.truncated {
+                    eprintln!(
+                        "fluxbench: warning: {}: deadline reached, {} of {} samples kept",
+                        bench.id,
+                        bench_result.samples.len(),
+                        cfg.sample_count
+                    );
+                }
+
                 // Extract timing samples as f64 for statistics
                 let samples: Vec<f64> = bench_result
                     .samples
@@ -271,6 +286,13 @@ impl Executor {
                     threshold: bench.threshold,
                 }
             }
+            Ok(Err(error)) => error_result(
+                bench,
+                BenchmarkStatus::Failed,
+                error.to_string(),
+                "unknown",
+                duration_ns,
+            ),
             Err(panic) => {
                 let message = if let Some(s) = panic.downcast_ref::<&str>() {
                     s.to_string()
@@ -279,27 +301,45 @@ impl Executor {
                 } else {
                     "Unknown panic".to_string()
                 };
-
-                BenchExecutionResult {
-                    benchmark_id: bench.id.to_string(),
-                    benchmark_name: bench.name.to_string(),
-                    group: bench.group.to_string(),
-                    file: bench.file.to_string(),
-                    line: bench.line,
-                    status: BenchmarkStatus::Crashed,
-                    samples: Vec::new(),
-                    cpu_cycles: Vec::new(),
-                    alloc_bytes: 0,
-                    alloc_count: 0,
+                error_result(
+                    bench,
+                    BenchmarkStatus::Crashed,
+                    message,
+                    "panic",
                     duration_ns,
-                    error_message: Some(message),
-                    failure_kind: Some("panic".to_string()),
-                    backtrace: None,
-                    severity: bench.severity,
-                    threshold: bench.threshold,
-                }
+                )
             }
         }
+    }
+}
+
+/// Result with no samples for a benchmark that did not finish.
+///
+/// `kind` matches the isolated-mode failure kind names.
+fn error_result(
+    bench: &BenchmarkDef,
+    status: BenchmarkStatus,
+    message: String,
+    kind: &str,
+    duration_ns: u64,
+) -> BenchExecutionResult {
+    BenchExecutionResult {
+        benchmark_id: bench.id.to_string(),
+        benchmark_name: bench.name.to_string(),
+        group: bench.group.to_string(),
+        file: bench.file.to_string(),
+        line: bench.line,
+        status,
+        samples: Vec::new(),
+        cpu_cycles: Vec::new(),
+        alloc_bytes: 0,
+        alloc_count: 0,
+        duration_ns,
+        error_message: Some(message),
+        failure_kind: Some(kind.to_string()),
+        backtrace: None,
+        severity: bench.severity,
+        threshold: bench.threshold,
     }
 }
 
@@ -382,24 +422,13 @@ impl IsolatedExecutor {
             Err(e) => {
                 // Supervisor-level failure - mark all as crashed
                 for bench in benchmarks {
-                    results.push(BenchExecutionResult {
-                        benchmark_id: bench.id.to_string(),
-                        benchmark_name: bench.name.to_string(),
-                        group: bench.group.to_string(),
-                        file: bench.file.to_string(),
-                        line: bench.line,
-                        status: BenchmarkStatus::Crashed,
-                        samples: Vec::new(),
-                        cpu_cycles: Vec::new(),
-                        alloc_bytes: 0,
-                        alloc_count: 0,
-                        duration_ns: 0,
-                        error_message: Some(format!("Supervisor error: {}", e)),
-                        failure_kind: Some("crashed".to_string()),
-                        backtrace: None,
-                        severity: bench.severity,
-                        threshold: bench.threshold,
-                    });
+                    results.push(error_result(
+                        bench,
+                        BenchmarkStatus::Crashed,
+                        format!("Supervisor error: {}", e),
+                        "crashed",
+                        0,
+                    ));
                     pb.inc(1);
                 }
             }
@@ -586,6 +615,45 @@ mod tests {
         assert_eq!(ipc.sample_count, 250);
         assert_eq!(ipc.iters_per_sample, Some(2));
         assert!(ipc.validate().is_ok());
+    }
+
+    #[test]
+    fn measure_config_carries_execution_fields() {
+        let cfg = ExecutionConfig {
+            warmup_time_ns: 11,
+            measurement_time_ns: 22,
+            min_iterations: Some(3),
+            max_iterations: Some(4),
+            sample_count: 250,
+            iters_per_sample: Some(5),
+            track_allocations: false,
+            ..Default::default()
+        };
+        let measure = cfg.to_measure_config();
+        assert_eq!(measure.warmup_ns, 11);
+        assert_eq!(measure.measurement_ns, 22);
+        assert_eq!(measure.min_iterations, Some(3));
+        assert_eq!(measure.max_iterations, Some(4));
+        assert_eq!(measure.sample_count, 250);
+        assert_eq!(measure.fixed_iters_per_sample, Some(5));
+        assert!(!measure.track_allocations);
+    }
+
+    #[test]
+    fn body_without_iter_fails_in_process() {
+        let executor = Executor::new(ExecutionConfig {
+            iters_per_sample: Some(1),
+            warmup_time_ns: 0,
+            ..Default::default()
+        });
+        let result = executor.execute_single(&bench_def());
+        assert_eq!(result.status, BenchmarkStatus::Failed);
+        assert_eq!(
+            result.error_message.as_deref(),
+            Some("benchmark body never called b.iter*")
+        );
+        assert_eq!(result.failure_kind.as_deref(), Some("unknown"));
+        assert!(result.samples.is_empty());
     }
 
     #[test]

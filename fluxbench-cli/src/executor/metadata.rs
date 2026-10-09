@@ -61,6 +61,7 @@ pub fn build_report_meta(exec_config: &ExecutionConfig) -> ReportMeta {
             bootstrap_iterations: exec_config.bootstrap_iterations,
             confidence_level: exec_config.confidence_level,
             track_allocations: exec_config.track_allocations,
+            timer_overhead_ns: fluxbench_core::timer_overhead_ns(),
         },
     }
 }
