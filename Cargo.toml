@@ -67,7 +67,9 @@ inventory = "0.3"
 rustc-hash = "2"
 
 # Time utilities
-chrono = { version = "0.4", features = ["serde"] }
+# Only `Utc::now()` is used. Skipping the default `clock` feature avoids
+# iana-time-zone (and its `cc` build dependency) in downstream lockfiles.
+chrono = { version = "0.4", default-features = false, features = ["serde", "std", "now"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
