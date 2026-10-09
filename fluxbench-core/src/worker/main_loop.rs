@@ -14,8 +14,29 @@ use crate::measure::{cycles_overhead, pin_to_cpu, timer_overhead_ns};
 use crate::shutdown::{install_sigterm_handler, shutdown_requested};
 use crate::{Bencher, BenchmarkDef, MeasureConfig, run_benchmark_loop};
 use fluxbench_ipc::{
-    BenchmarkConfig, FailureKind, SupervisorCommand, WorkerCapabilities, WorkerMessage,
+    BenchmarkConfig, FailureKind, PIN_CPU_ENV, SupervisorCommand, WorkerCapabilities, WorkerMessage,
 };
+
+/// Pin to the CPU in `PIN_CPU_ENV`. An absent var skips pinning.
+///
+/// A bad value or a failed pin prints one stderr line. The benchmark still runs.
+fn pin_from_env() {
+    let Ok(value) = std::env::var(PIN_CPU_ENV) else {
+        return;
+    };
+    match value.parse::<usize>() {
+        Ok(cpu) => {
+            if let Err(e) = pin_to_cpu(cpu) {
+                eprintln!(
+                    "fluxbench: warning: pin to CPU {cpu} failed: {e}. Timings run unpinned."
+                );
+            }
+        }
+        Err(_) => eprintln!(
+            "fluxbench: warning: invalid {PIN_CPU_ENV}={value:?} (expected a CPU index). Timings run unpinned."
+        ),
+    }
+}
 
 /// Worker main loop
 pub struct WorkerMain {
@@ -44,8 +65,8 @@ impl WorkerMain {
         // Start before pinning, so the flusher does not share the pinned core.
         let _flusher = Flusher::start(self.stream.clone());
 
-        // Pin to CPU 0 for stable TSC
-        let _ = pin_to_cpu(0);
+        // Pin to the CPU the supervisor assigned, for stable TSC
+        pin_from_env();
 
         // Calibrate timer overhead on the pinned core before any benchmark runs
         let _ = timer_overhead_ns();

@@ -23,6 +23,11 @@ pub use ring_buffer::SampleRingBuffer;
 /// The worker streams sample batches during measurement.
 pub const PROTOCOL_VERSION: u32 = 3;
 
+/// Env var the supervisor sets to the CPU index a worker pins to.
+///
+/// Absent means the worker does not pin.
+pub const PIN_CPU_ENV: &str = "FLUX_PIN_CPU";
+
 /// Maximum samples per batch (prevents unbounded memory growth)
 pub const MAX_BATCH_SIZE: usize = 10_000;
 

@@ -388,6 +388,7 @@ confidence_level = 0.95      # Confidence level, 0.0–1.0 (default: 0.95)
 # min_iterations = 100       # Minimum total measurement iterations (default: auto-tuned)
 # max_iterations = 1000000   # Maximum total measurement iterations (default: auto-tuned)
 # jobs = 4                   # Parallel isolated workers (default: sequential)
+# pin_cpus = false           # Pin each isolated worker to its own CPU (default: true)
 ```
 
 ### Allocator
@@ -537,7 +538,12 @@ Benchmarks run in worker processes by default. Every benchmark gets its own repo
 
 - Persistent mode (default): one worker runs many benchmarks. A worker that crashes, times out, or breaks the IPC stream is killed and replaced. The next benchmark gets a fresh worker.
 - One-shot mode (`--one-shot`): each benchmark gets a fresh worker.
-- `--jobs N`: N workers run benchmarks in parallel. Both modes support it.
+- `--jobs N`: N workers run benchmarks in parallel. Both modes support it. Parallel jobs perturb measurements.
+- `--pin` / `--no-pin`: pin each worker to its own CPU (default: on). They conflict. They override `runner.pin_cpus` in `flux.toml`.
+  - Linux only. The supervisor reads the process affinity mask and skips CPU 0 when other CPUs exist.
+  - `--jobs N` above the usable CPU count makes workers share cores. A warning prints on stderr.
+  - A failed pin prints one stderr warning in the worker. The benchmark still runs.
+  - `--no-pin` leaves workers to the OS scheduler.
 
 A failed benchmark reports status `crashed` or `failed` and a `failure.kind`:
 

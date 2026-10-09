@@ -82,6 +82,9 @@ pub struct RunnerConfig {
     /// Number of parallel isolated workers
     #[serde(default)]
     pub jobs: Option<usize>,
+    /// Pin each isolated worker to its own CPU (default: true)
+    #[serde(default)]
+    pub pin_cpus: Option<bool>,
 }
 
 impl Default for RunnerConfig {
@@ -98,6 +101,7 @@ impl Default for RunnerConfig {
             bootstrap_iterations: default_bootstrap_iterations(),
             confidence_level: default_confidence_level(),
             jobs: None,
+            pin_cpus: None,
         }
     }
 }
@@ -293,6 +297,8 @@ isolation = "process"  # "process", "in-process", or "thread"
 # max_iterations = 1000000
 # Number of parallel isolated workers (uncomment to enable)
 # jobs = 4
+# Pin each isolated worker to its own CPU (default: true)
+# pin_cpus = false
 # Bootstrap iterations for confidence intervals
 bootstrap_iterations = 10000
 # Confidence level (0.0 to 1.0)

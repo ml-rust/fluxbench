@@ -21,6 +21,7 @@
 //! ```
 
 mod config;
+mod cpu_pin;
 mod executor;
 mod planner;
 mod run_config;
@@ -145,6 +146,18 @@ pub struct Cli {
     /// It overrides flux.toml when set.
     #[arg(long)]
     pub jobs: Option<usize>,
+
+    /// Pin each isolated worker to its own CPU (default)
+    ///
+    /// It overrides flux.toml `runner.pin_cpus`.
+    #[arg(long, conflicts_with = "no_pin")]
+    pub pin: bool,
+
+    /// Do not pin isolated workers to CPUs
+    ///
+    /// It overrides flux.toml `runner.pin_cpus`.
+    #[arg(long)]
+    pub no_pin: bool,
 
     /// Number of threads for parallel statistics computation
     /// 0 = use all available cores (default), 1 = single-threaded
@@ -398,8 +411,17 @@ fn run_benchmarks(
     let results = if isolated {
         let timeout = std::time::Duration::from_secs(cli.worker_timeout);
         let reuse_workers = !cli.one_shot;
+        let allowed = cpu_pin::allowed_cpus();
+        let pinned = run_config::resolve_pin(cli, config) && !allowed.is_empty();
+        status::print_parallel_warnings(jobs, pinned.then(|| cpu_pin::usable_cpus(&allowed).len()));
+        let cpus = if pinned {
+            cpu_pin::assign_cpus(&allowed, jobs)
+        } else {
+            Vec::new()
+        };
         let isolated_executor =
-            IsolatedExecutor::new(exec_config.clone(), timeout, reuse_workers, jobs);
+            IsolatedExecutor::new(exec_config.clone(), timeout, reuse_workers, jobs)
+                .with_cpus(cpus);
         isolated_executor.execute(&benchmarks)
     } else {
         if jobs > 1 {

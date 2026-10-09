@@ -21,6 +21,29 @@ pub(crate) fn write_run_banner(
     )
 }
 
+/// Write the warnings that parallel workers need.
+///
+/// `usable_cpus` is the pin pool size, or `None` when workers are not pinned.
+pub(crate) fn write_parallel_warnings(
+    out: &mut impl Write,
+    jobs: usize,
+    usable_cpus: Option<usize>,
+) -> io::Result<()> {
+    if jobs > 1 {
+        writeln!(
+            out,
+            "Warning: --jobs {jobs} runs benchmarks in parallel. Parallel jobs perturb measurements."
+        )?;
+    }
+    if let Some(cpus) = usable_cpus.filter(|&cpus| jobs > cpus) {
+        writeln!(
+            out,
+            "Warning: --jobs {jobs} exceeds the {cpus} usable CPU(s). Workers share cores."
+        )?;
+    }
+    Ok(())
+}
+
 /// Write `::error::` and `::warning::` workflow commands for GitHub Actions.
 ///
 /// The caller passes stderr. Whether the runner reads workflow commands
@@ -98,6 +121,11 @@ pub(crate) fn print_run_banner(count: usize, mode: &str, threads: &str, jobs: us
     let _ = write_run_banner(&mut io::stderr().lock(), count, mode, threads, jobs);
 }
 
+/// Emit the parallel-worker warnings on stderr. A write error is dropped.
+pub(crate) fn print_parallel_warnings(jobs: usize, usable_cpus: Option<usize>) {
+    let _ = write_parallel_warnings(&mut io::stderr().lock(), jobs, usable_cpus);
+}
+
 /// Emit annotations on stderr. A write error is dropped.
 pub(crate) fn print_github_annotations(report: &Report) {
     let _ = write_github_annotations(&mut io::stderr().lock(), report);
@@ -106,6 +134,33 @@ pub(crate) fn print_github_annotations(report: &Report) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn warnings(jobs: usize, cpus: Option<usize>) -> String {
+        let mut buf = Vec::new();
+        write_parallel_warnings(&mut buf, jobs, cpus).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn one_job_prints_no_warning() {
+        assert_eq!(warnings(1, Some(4)), "");
+        assert_eq!(warnings(1, None), "");
+    }
+
+    #[test]
+    fn parallel_jobs_warn_about_perturbation() {
+        let text = warnings(2, Some(4));
+        assert!(text.contains("perturb"));
+        assert!(!text.contains("share cores"));
+        assert!(!warnings(2, None).contains("share cores"));
+    }
+
+    #[test]
+    fn more_jobs_than_cpus_warns_about_shared_cores() {
+        let text = warnings(4, Some(2));
+        assert!(text.contains("perturb"));
+        assert!(text.contains("share cores"));
+    }
 
     #[test]
     fn banner_has_counts_and_trailing_blank_line() {

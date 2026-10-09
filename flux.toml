@@ -34,6 +34,8 @@ confidence_level = 0.95
 # max_iterations = 1000000
 # Parallel isolated workers (default: unset — sequential)
 # jobs = 4
+# Pin each isolated worker to its own CPU, Linux only (default: true)
+# pin_cpus = false
 
 [allocator]
 # Track memory allocations during benchmarks (default: true)

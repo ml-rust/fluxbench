@@ -21,6 +21,8 @@ pub struct Supervisor {
     config: BenchmarkConfig,
     timeout: Duration,
     num_workers: usize,
+    /// CPU for worker slot `i`. A missing or `None` entry leaves that worker unpinned.
+    cpus: Vec<Option<usize>>,
 }
 
 impl Supervisor {
@@ -30,7 +32,14 @@ impl Supervisor {
             config,
             timeout,
             num_workers: num_workers.max(1),
+            cpus: Vec::new(),
         }
+    }
+
+    /// Set the CPU each worker slot pins to. Slot `i` takes entry `i`.
+    pub fn with_cpus(mut self, cpus: Vec<Option<usize>>) -> Self {
+        self.cpus = cpus;
+        self
     }
 
     /// Run all benchmarks in one-shot mode with the default config.
@@ -100,7 +109,7 @@ impl Supervisor {
 
         let worker_count = self.num_workers.min(jobs.len());
         let indexed = if worker_count == 1 {
-            self.run_shard(&jobs, reuse)
+            self.run_shard(&jobs, reuse, self.cpu_for(0))
         } else {
             let mut shards: Vec<Vec<Job<'_>>> = vec![Vec::new(); worker_count];
             for (position, job) in jobs.iter().enumerate() {
@@ -110,7 +119,10 @@ impl Supervisor {
                 Ok(pool) => pool.install(|| {
                     shards
                         .par_iter()
-                        .flat_map_iter(|shard| self.run_shard(shard, reuse))
+                        .enumerate()
+                        .flat_map_iter(|(slot, shard)| {
+                            self.run_shard(shard, reuse, self.cpu_for(slot))
+                        })
                         .collect()
                 }),
                 Err(e) => {
@@ -118,7 +130,7 @@ impl Supervisor {
                         "fluxbench: warning: worker thread pool build failed: {e}. Running {} benchmarks serially.",
                         jobs.len()
                     );
-                    self.run_shard(&jobs, reuse)
+                    self.run_shard(&jobs, reuse, self.cpu_for(0))
                 }
             }
         };
@@ -146,14 +158,24 @@ impl Supervisor {
             .collect()
     }
 
-    /// Run one shard in order on one worker slot.
+    /// CPU for worker slot `slot`, if one is assigned.
+    fn cpu_for(&self, slot: usize) -> Option<usize> {
+        self.cpus.get(slot).copied().flatten()
+    }
+
+    /// Run one shard in order on one worker slot, pinned to `cpu`.
     ///
     /// `reuse == false` retires the worker after each benchmark (one-shot mode).
-    fn run_shard(&self, shard: &[Job<'_>], reuse: bool) -> Vec<(usize, IpcBenchmarkResult)> {
+    fn run_shard(
+        &self,
+        shard: &[Job<'_>],
+        reuse: bool,
+        cpu: Option<usize>,
+    ) -> Vec<(usize, IpcBenchmarkResult)> {
         let mut slot: Option<WorkerHandle> = None;
         let mut results = Vec::with_capacity(shard.len());
         for &(index, bench, config) in shard {
-            results.push((index, self.run_one(&mut slot, bench, config)));
+            results.push((index, self.run_one(&mut slot, bench, config, cpu)));
             if !reuse {
                 retire(slot.take());
             }
@@ -171,10 +193,11 @@ impl Supervisor {
         slot: &mut Option<WorkerHandle>,
         bench: &BenchmarkDef,
         config: &BenchmarkConfig,
+        cpu: Option<usize>,
     ) -> IpcBenchmarkResult {
         let mut last_send_error = None;
         for _ in 0..2 {
-            let worker = match self.ready_worker(slot) {
+            let worker = match self.ready_worker(slot, cpu) {
                 Ok(worker) => worker,
                 Err(e) => return IpcBenchmarkResult::crashed(bench.id, e.to_string()),
             };
@@ -209,12 +232,13 @@ impl Supervisor {
     fn ready_worker<'s>(
         &self,
         slot: &'s mut Option<WorkerHandle>,
+        cpu: Option<usize>,
     ) -> Result<&'s mut WorkerHandle, SupervisorError> {
         if slot.as_mut().is_some_and(|w| !w.is_alive()) {
             discard(slot.take());
         }
         if slot.is_none() {
-            *slot = Some(WorkerHandle::spawn(self.timeout)?);
+            *slot = Some(WorkerHandle::spawn(self.timeout, cpu)?);
         }
         slot.as_mut().ok_or_else(|| {
             SupervisorError::IpcError("worker slot is empty after spawn. Report a bug.".to_string())

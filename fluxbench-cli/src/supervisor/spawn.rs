@@ -9,7 +9,7 @@ use super::error::SupervisorError;
 use super::handle::{IpcReader, IpcWriter, WorkerHandle};
 use super::hello::{WORKER_HELLO_TIMEOUT, read_hello_within};
 use super::process::kill_and_reap;
-use fluxbench_ipc::{FrameReader, FrameWriter};
+use fluxbench_ipc::{FrameReader, FrameWriter, PIN_CPU_ENV};
 use std::env;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -24,14 +24,16 @@ use std::os::unix::process::CommandExt;
 
 impl WorkerHandle {
     /// Spawn a worker from the current executable.
-    pub fn spawn(timeout: Duration) -> Result<Self, SupervisorError> {
+    ///
+    /// `cpu` is the core the worker pins to. `None` leaves the worker unpinned.
+    pub fn spawn(timeout: Duration, cpu: Option<usize>) -> Result<Self, SupervisorError> {
         let binary = env::current_exe().map_err(SupervisorError::SpawnFailed)?;
-        spawn_impl(&binary, timeout)
+        spawn_impl(&binary, timeout, cpu)
     }
 
     /// Spawn a worker from a specific binary (for testing).
     pub fn spawn_binary(binary: &str, timeout: Duration) -> Result<Self, SupervisorError> {
-        spawn_impl(binary.as_ref(), timeout)
+        spawn_impl(binary.as_ref(), timeout, None)
     }
 }
 
@@ -67,7 +69,11 @@ fn handshake(
 }
 
 #[cfg(unix)]
-fn spawn_impl(binary: &Path, timeout: Duration) -> Result<WorkerHandle, SupervisorError> {
+fn spawn_impl(
+    binary: &Path,
+    timeout: Duration,
+    cpu: Option<usize>,
+) -> Result<WorkerHandle, SupervisorError> {
     // cmd pipe: supervisor writes commands, worker reads from cmd_read.
     let (cmd_read, cmd_write) = create_pipe()?;
     // msg pipe: worker writes to msg_write, supervisor reads from msg_read.
@@ -88,6 +94,9 @@ fn spawn_impl(binary: &Path, timeout: Duration) -> Result<WorkerHandle, Supervis
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
+    if let Some(cpu) = cpu {
+        command.env(PIN_CPU_ENV, cpu.to_string());
+    }
 
     // In the child: keep the child-side fds across exec and close the parent-side fds.
     // SAFETY: the closure only calls async-signal-safe `fcntl` and `close`.
@@ -149,13 +158,21 @@ fn spawn_impl(binary: &Path, timeout: Duration) -> Result<WorkerHandle, Supervis
 }
 
 #[cfg(not(unix))]
-fn spawn_impl(binary: &Path, timeout: Duration) -> Result<WorkerHandle, SupervisorError> {
-    let mut child = Command::new(binary)
+fn spawn_impl(
+    binary: &Path,
+    timeout: Duration,
+    cpu: Option<usize>,
+) -> Result<WorkerHandle, SupervisorError> {
+    let mut command = Command::new(binary);
+    command
         .arg("--flux-worker")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
+        .stderr(Stdio::inherit());
+    if let Some(cpu) = cpu {
+        command.env(PIN_CPU_ENV, cpu.to_string());
+    }
+    let mut child = command.spawn()?;
 
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         let _ = kill_and_reap(&mut child);

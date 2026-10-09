@@ -66,6 +66,14 @@ pub(crate) fn resolve_jobs(cli: &Cli, config: &FluxConfig) -> usize {
     cli.jobs.or(config.runner.jobs).unwrap_or(1)
 }
 
+/// Resolve worker pinning: `--no-pin`, then `--pin`, then flux.toml `pin_cpus`, then on.
+pub(crate) fn resolve_pin(cli: &Cli, config: &FluxConfig) -> bool {
+    if cli.no_pin {
+        return false;
+    }
+    cli.pin || config.runner.pin_cpus.unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +187,30 @@ mod tests {
         assert_eq!(resolve_jobs(&cli(&["--jobs", "1"]), &config), 1);
         assert_eq!(resolve_jobs(&cli(&[]), &config), 4);
         assert_eq!(resolve_jobs(&cli(&[]), &FluxConfig::default()), 1);
+    }
+
+    #[test]
+    fn pin_defaults_on() {
+        assert!(resolve_pin(&cli(&[]), &FluxConfig::default()));
+    }
+
+    #[test]
+    fn toml_can_disable_pin() {
+        let config = toml_config("[runner]\npin_cpus = false\n");
+        assert!(!resolve_pin(&cli(&[]), &config));
+    }
+
+    #[test]
+    fn cli_pin_flags_beat_toml() {
+        let off = toml_config("[runner]\npin_cpus = false\n");
+        let on = toml_config("[runner]\npin_cpus = true\n");
+        assert!(resolve_pin(&cli(&["--pin"]), &off));
+        assert!(!resolve_pin(&cli(&["--no-pin"]), &on));
+        assert!(!resolve_pin(&cli(&["--no-pin"]), &FluxConfig::default()));
+    }
+
+    #[test]
+    fn pin_flags_conflict() {
+        assert!(Cli::try_parse_from(["bench", "--pin", "--no-pin"]).is_err());
     }
 }

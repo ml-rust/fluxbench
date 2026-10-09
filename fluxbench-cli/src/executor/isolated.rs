@@ -20,6 +20,7 @@ pub struct IsolatedExecutor {
     timeout: Duration,
     reuse_workers: bool,
     num_workers: usize,
+    cpus: Vec<Option<usize>>,
 }
 
 impl IsolatedExecutor {
@@ -35,7 +36,14 @@ impl IsolatedExecutor {
             timeout,
             reuse_workers,
             num_workers: num_workers.max(1),
+            cpus: Vec::new(),
         }
+    }
+
+    /// Set the CPU each worker pins to. An empty list leaves workers unpinned.
+    pub fn with_cpus(mut self, cpus: Vec<Option<usize>>) -> Self {
+        self.cpus = cpus;
+        self
     }
 
     /// Execute all provided benchmarks in isolated worker processes
@@ -59,7 +67,8 @@ impl IsolatedExecutor {
             .cloned()
             .unwrap_or_else(|| self.config.to_ipc_config(self.timeout));
 
-        let supervisor = Supervisor::new(default_config, self.timeout, self.num_workers);
+        let supervisor = Supervisor::new(default_config, self.timeout, self.num_workers)
+            .with_cpus(self.cpus.clone());
 
         // Run benchmarks via IPC with per-benchmark configs
         let ipc_results = if self.reuse_workers {
