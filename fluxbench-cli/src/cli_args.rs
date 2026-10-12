@@ -46,15 +46,15 @@ pub struct Cli {
     #[arg(long)]
     pub threshold: Option<f64>,
 
-    /// Run benchmarks of this group and its #[flux::group] child groups. An unknown group is an error.
+    /// Run benchmarks of this group and its #[group] child groups. An unknown group is an error.
     #[arg(long)]
     pub group: Option<String>,
 
-    /// Run benchmarks with this tag, from #[bench] or #[flux::group]. An unknown tag is an error.
+    /// Run benchmarks with this tag, from #[bench] or #[group]. An unknown tag is an error.
     #[arg(long)]
     pub tag: Option<String>,
 
-    /// Skip benchmarks with this tag, from #[bench] or #[flux::group]. An unknown tag is an error.
+    /// Skip benchmarks with this tag, from #[bench] or #[group]. An unknown tag is an error.
     #[arg(long)]
     pub skip_tag: Option<String>,
 

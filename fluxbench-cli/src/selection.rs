@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) struct Selection {
     /// Every registered benchmark
     pub all: Vec<&'static BenchmarkDef>,
-    /// Checked `#[flux::group]` definitions
+    /// Checked `#[group]` definitions
     pub groups: GroupTree<'static>,
     /// Selected benchmarks in execution order
     pub selected: Vec<&'static BenchmarkDef>,

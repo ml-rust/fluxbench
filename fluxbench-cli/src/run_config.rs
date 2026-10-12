@@ -1,7 +1,7 @@
 //! Run config resolution
 //!
 //! Layers run settings in this order:
-//! `#[flux::bench]` > nearest `#[flux::group]` > parent groups > CLI flag > flux.toml > default.
+//! `#[bench]` > nearest `#[group]` > parent groups > CLI flag > flux.toml > default.
 //! This module covers the CLI and flux.toml layers.
 //! `ExecutionConfig::resolve_for_benchmark` applies the bench and group layers per benchmark.
 

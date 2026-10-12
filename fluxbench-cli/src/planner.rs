@@ -4,8 +4,8 @@
 //!
 //! Filtering options:
 //! - Regex pattern matching on benchmark ID
-//! - Group filtering. A group also selects its `#[flux::group]` child groups.
-//! - Tag inclusion/exclusion. Tags include those inherited from `#[flux::group]`.
+//! - Group filtering. A group also selects its `#[group]` child groups.
+//! - Tag inclusion/exclusion. Tags include those inherited from `#[group]`.
 //!
 //! Ordering:
 //! 1. Dependency-based topological sort (benchmarks with `depends_on` run after their deps)
