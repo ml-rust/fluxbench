@@ -48,11 +48,19 @@ Critical <code>#[verify]</code> rules exit 1 on a failed check.
 
 </div>
 
-FluxBench is a benchmarking framework for Rust. A benchmark is a function with `#[bench]`. `cargo bench` runs it in a worker process, so a panic in one benchmark does not stop the suite. Each run reports bootstrap confidence intervals, percentiles, and cycle counts. Attributes add verification rules, derived metrics, comparison tables, and report output.
+FluxBench is a benchmarking framework for Rust and an alternative to criterion. Its `iter_batched` API follows criterion's. A benchmark is a function with `#[bench]`. `cargo bench` runs it in a worker process, so a panic in one benchmark does not stop the suite. Each run reports bootstrap confidence intervals, percentiles, and cycle counts. Attributes add verification rules, derived metrics, comparison tables, and report output.
+
+It is written in Rust and needs no Python. Use it for performance tests in a library, or as a CI gate on regressions.
+
+## Requirements and limits
+
+- Rust 1.85 or later.
+- The default `async` feature adds tokio for async benchmarks. Disable default features to remove tokio.
+- Cycle counts work on x86_64 and aarch64. Other targets report 0.
+- Signal names in crash reports, SIGTERM timeouts, and the dedicated IPC pipes are Unix only. On other platforms a timeout kills the worker at once, and `println!` in a benchmark body corrupts the IPC stream. See [crash isolation](docs/isolation.md).
+- Baselines saved with 0.1.x are not comparable.
 
 ## Quick Start
-
-FluxBench requires Rust 1.85 or later.
 
 ### 1. Add the dependency
 
