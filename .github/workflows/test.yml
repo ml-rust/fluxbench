@@ -1,11 +1,11 @@
 # Reusable test workflow: lint, format, docs, and cross-platform tests.
 #
 # Called by:
-#   - benchmark.yml (PR regression checks)
-#   - baseline.yml  (post-merge baseline saves)
-#   - release.yml   (via benchmark.yml)
+#   - ci.yml        (PR checks and manual dispatch)
+#   - benchmark.yml (PR regression checks, and the tag gate in release-prepare.yml)
+#   - baseline.yml  (baseline saves)
 #
-# Not triggered directly — use workflow_call only.
+# Runs through `workflow_call` only.
 
 name: Test
 
@@ -23,14 +23,14 @@ jobs:
     name: Lint, Format & Docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: lint
 
@@ -46,6 +46,9 @@ jobs:
       - name: Run doctests
         run: cargo test --workspace --doc
 
+      - name: Shellcheck release scripts
+        run: shellcheck scripts/ci/*.sh
+
   test:
     needs: lint
     name: Test (${{ matrix.os }})
@@ -55,12 +58,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: test
 
