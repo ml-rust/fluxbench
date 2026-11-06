@@ -1,6 +1,6 @@
 [package]
 name = "fluxbench"
-description = "Benchmarking framework with process isolation, bootstrap statistics, algebraic verification, and CI integration"
+description = "Benchmarking framework for Rust, an alternative to criterion, with process isolation, bootstrap statistics, regression checks and CI integration"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
