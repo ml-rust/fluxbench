@@ -9,6 +9,15 @@ The 0.1.4 entry covers everything up to and including 0.1.4. Tags before it pred
 
 ---
 
+## [0.2.1] - 2026-11-06
+
+### Changed
+
+- `README`, crate description: state what the crate does.
+- CLI help: names attributes without the `flux::` prefix.
+
+---
+
 ## [0.2.0] — 2026-10-09
 
 Criterion-style measurement, hardened process isolation, and real baseline regression detection. Config errors are now hard errors. Baselines saved with 0.1.x are not comparable.
